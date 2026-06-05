@@ -55,6 +55,27 @@ uv tool install fast-resume
 fr
 ```
 
+### From this fork (unreleased features)
+
+This fork bundles features not yet released upstream:
+
+- **Named-session markers** — `✎` for titles you set with `/rename`, `✦` for Claude's auto-generated ones
+- **`Ctrl+N`** — filter the list to sessions you named yourself
+- **Remembered preview size** — the height you set with `+` / `-` persists between runs
+- Silenced the `textual_image` cell-size warning on terminals without pixel reporting (e.g. Terminator, GNOME Terminal)
+
+Install the combined build straight from the fork with uv:
+
+```bash
+uv tool install --force git+https://github.com/jacegodk/fast-resume.git@combined
+```
+
+To update later (the `--no-cache` avoids reusing a stale build, since the version string doesn't change):
+
+```bash
+uv tool install --force --reinstall --no-cache git+https://github.com/jacegodk/fast-resume.git@combined
+```
+
 ## Usage
 
 ### Interactive TUI
