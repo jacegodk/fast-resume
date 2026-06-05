@@ -751,6 +751,21 @@ class TestFastResumeAppNavigation:
                 await pilot.press("f2")
                 assert app.show_preview is True
 
+    def test_f2_is_the_shown_preview_binding(self):
+        """F2 is the footer-visible preview toggle; Ctrl+` is a hidden alternative.
+
+        Textual's Footer groups bindings by action and skips show=False bindings,
+        so marking Ctrl+` hidden leaves F2 as the single visible 'Preview' entry
+        while both keys still trigger the toggle.
+        """
+        preview = {
+            b.key: b
+            for b in FastResumeApp.BINDINGS
+            if b.action == "toggle_preview" and b.key in ("f2", "ctrl+grave_accent")
+        }
+        assert preview["f2"].show is True
+        assert preview["ctrl+grave_accent"].show is False
+
 
 class TestFastResumeAppSearch:
     """Tests for search functionality."""
