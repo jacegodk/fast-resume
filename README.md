@@ -61,7 +61,8 @@ This fork bundles features not yet released upstream:
 
 - **Named-session markers** — `✎` for titles you set with `/rename`, `✦` for Claude's auto-generated ones
 - **`Ctrl+N`** — filter the list to sessions you named yourself
-- **Remembered preview size** — the height you set with `+` / `-` persists between runs
+- **`F2` toggles the preview** — a layout-independent alternative (the default Ctrl+backtick is awkward on non-US keyboards)
+- **Remembered preview size** — the height you set with `+` / `-` persists between runs, capped at 80% of the window
 - Silenced the `textual_image` cell-size warning on terminals without pixel reporting (e.g. Terminator, GNOME Terminal)
 
 Install the combined build straight from the fork with uv:
