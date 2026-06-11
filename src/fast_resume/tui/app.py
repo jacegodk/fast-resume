@@ -11,9 +11,10 @@ from textual.app import App, ComposeResult
 from textual.command import CommandPalette
 from textual.css.query import NoMatches
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, HorizontalGroup, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Footer, HelpPanel, Input, Label
 
 from .. import __version__
@@ -31,6 +32,28 @@ from .styles import APP_CSS
 from .utils import copy_to_clipboard
 
 logger = logging.getLogger(__name__)
+
+
+class FastResumeFooter(Footer):
+    """Footer that shows the keys-overview hint on the right, next to ^p."""
+
+    def compose(self) -> ComposeResult:
+        # Two siblings docked right would overlap, so collect the ^k hint and
+        # the command palette key into a single right-docked group.
+        right: list[Widget] = []
+        for widget in super().compose():
+            if getattr(widget, "key", None) == "ctrl+k" or widget.has_class(
+                "-command-palette"
+            ):
+                right.append(widget)
+            else:
+                yield widget
+        right.sort(key=lambda w: w.has_class("-command-palette"))
+        with HorizontalGroup(classes="-right-hints"):
+            for widget in right:
+                widget.remove_class("-command-palette")
+                widget.add_class("-keys-hint")
+                yield widget
 
 
 class FastResumeApp(App):
@@ -171,7 +194,7 @@ class FastResumeApp(App):
                     yield ResultsTable(id="results-table")
                 with VerticalScroll(id="preview-container"):
                     yield SessionPreview()
-        yield Footer()
+        yield FastResumeFooter()
 
     def on_mount(self) -> None:
         """Set up the app when mounted."""

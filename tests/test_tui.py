@@ -1021,6 +1021,24 @@ class TestFastResumeAppPreview:
                 assert len(app.query(HelpPanel)) == 0
 
     @pytest.mark.asyncio
+    async def test_keys_hint_docked_right_with_command_palette(
+        self, mock_search_engine
+    ):
+        """The ^k hint sits in the footer's right-docked group, before ^p."""
+        from fast_resume.tui.app import FastResumeFooter
+
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                footer = app.query_one(FastResumeFooter)
+                group = footer.query_one(".-right-hints")
+                keys = [getattr(w, "key", None) for w in group.children]
+                assert keys == ["ctrl+k", "ctrl+p"]
+
+    @pytest.mark.asyncio
     async def test_escape_closes_command_palette(self, mock_search_engine):
         """Escape cancels the command palette instead of doing nothing."""
         from textual.command import CommandPalette

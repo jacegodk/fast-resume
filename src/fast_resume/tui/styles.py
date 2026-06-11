@@ -297,6 +297,17 @@ Footer > .footer--description {
     color: $text-muted;
 }
 
+/* Right-docked group holding the keys-overview hint and command palette key */
+FastResumeFooter HorizontalGroup.-right-hints {
+    dock: right;
+    width: auto;
+}
+
+FooterKey.-keys-hint {
+    padding-right: 1;
+    border-left: vkey $foreground 20%;
+}
+
 #query-time {
     width: auto;
     padding: 0 1;
