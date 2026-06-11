@@ -66,6 +66,45 @@ class FastResumeApp(App):
         Binding("plus", "increase_preview", "+Preview", show=False),
         Binding("equals", "increase_preview", "+Preview", show=False),
         Binding("minus", "decrease_preview", "-Preview", show=False),
+        # Ctrl variants work even while typing in the search input. Ctrl+= is
+        # bound alongside Ctrl++ (same key unshifted), and legacy terminals
+        # report Ctrl+- as ctrl+underscore (0x1f).
+        Binding("ctrl+plus", "increase_preview", "+Preview", show=False, priority=True),
+        Binding(
+            "ctrl+equals_sign",
+            "increase_preview",
+            "+Preview",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+minus", "decrease_preview", "-Preview", show=False, priority=True
+        ),
+        Binding(
+            "ctrl+underscore", "decrease_preview", "-Preview", show=False, priority=True
+        ),
+        # Scroll the preview pane without moving focus to it.
+        Binding(
+            "ctrl+down", "scroll_preview_down", "Scroll preview", show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+up", "scroll_preview_up", "Scroll preview", show=False, priority=True
+        ),
+        Binding(
+            "ctrl+pagedown",
+            "scroll_preview_page_down",
+            "Scroll preview",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+pageup",
+            "scroll_preview_page_up",
+            "Scroll preview",
+            show=False,
+            priority=True,
+        ),
         Binding("ctrl+p", "command_palette", "Commands"),
     ]
 
@@ -573,6 +612,26 @@ class FastResumeApp(App):
         """Apply the current preview height to the container."""
         preview_container = self.query_one("#preview-container")
         preview_container.styles.height = self.preview_height
+
+    def action_scroll_preview_down(self) -> None:
+        """Scroll the preview pane down one line."""
+        self.query_one("#preview-container", VerticalScroll).scroll_down(animate=False)
+
+    def action_scroll_preview_up(self) -> None:
+        """Scroll the preview pane up one line."""
+        self.query_one("#preview-container", VerticalScroll).scroll_up(animate=False)
+
+    def action_scroll_preview_page_down(self) -> None:
+        """Scroll the preview pane down one page."""
+        self.query_one("#preview-container", VerticalScroll).scroll_page_down(
+            animate=False
+        )
+
+    def action_scroll_preview_page_up(self) -> None:
+        """Scroll the preview pane up one page."""
+        self.query_one("#preview-container", VerticalScroll).scroll_page_up(
+            animate=False
+        )
 
     def _set_filter(self, agent: str | None) -> None:
         """Set the agent filter and refresh results, syncing query string."""

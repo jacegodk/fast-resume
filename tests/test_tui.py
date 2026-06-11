@@ -938,6 +938,76 @@ class TestFastResumeAppPreview:
                 await pilot.pause()
                 assert app.preview_height < initial_height
 
+    @pytest.mark.asyncio
+    async def test_ctrl_plus_minus_resize_preview_without_focus(
+        self, mock_search_engine
+    ):
+        """Ctrl++/Ctrl+- resize the preview while focus stays on the search input."""
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                # Search input has focus by default - don't move it
+                search_input = app.query_one("#search-input")
+                assert search_input.has_focus
+
+                initial_height = app.preview_height
+
+                await pilot.press("ctrl+plus")
+                await pilot.pause()
+                assert app.preview_height > initial_height
+
+                await pilot.press("ctrl+minus")
+                await pilot.press("ctrl+minus")
+                await pilot.pause()
+                assert app.preview_height < initial_height
+
+                # Focus never left the search input
+                assert search_input.has_focus
+
+    @pytest.mark.asyncio
+    async def test_ctrl_keys_scroll_preview_without_focus(self, mock_search_engine):
+        """Ctrl+Up/Down and Ctrl+PgUp/PgDn scroll the preview without focusing it."""
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                search_input = app.query_one("#search-input")
+                assert search_input.has_focus
+
+                # Fill the preview with enough lines to overflow its container
+                preview = app.query_one("#preview")
+                preview.update(Text("\n".join(f"line {i}" for i in range(100))))
+                await pilot.pause()
+
+                container = app.query_one("#preview-container")
+                assert container.max_scroll_y > 0
+                assert container.scroll_y == 0
+
+                await pilot.press("ctrl+down")
+                await pilot.pause()
+                assert container.scroll_y == 1
+
+                await pilot.press("ctrl+up")
+                await pilot.pause()
+                assert container.scroll_y == 0
+
+                await pilot.press("ctrl+pagedown")
+                await pilot.pause()
+                page_offset = container.scroll_y
+                assert page_offset > 1
+
+                await pilot.press("ctrl+pageup")
+                await pilot.pause()
+                assert container.scroll_y == 0
+
+                # Focus never left the search input
+                assert search_input.has_focus
+
 
 class TestFastResumeAppResumeCommand:
     """Tests for resume command functionality."""
