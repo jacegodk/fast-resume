@@ -42,7 +42,10 @@ class FastResumeApp(App):
     CSS = APP_CSS
 
     BINDINGS = [
-        Binding("escape", "quit", "Quit", priority=True),
+        # key_display advertises Ctrl+Q alongside Escape in the footer; the
+        # footer shows one entry per action, so the extra keys stay hidden.
+        Binding("escape", "quit", "Quit", priority=True, key_display="^q / esc"),
+        Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("q", "quit", "Quit", show=False),
         Binding("ctrl+c", "quit", "Quit", show=False),
         Binding("/", "focus_search", "Search", priority=True),

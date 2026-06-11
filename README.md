@@ -188,7 +188,7 @@ Options:
 | `c`       | Copy full resume command to clipboard |
 | `Ctrl+K`  | Toggle keys overview                  |
 | `Ctrl+P`  | Open command palette                  |
-| `q`/`Esc` | Quit                                  |
+| `q` / `Esc` / `Ctrl+Q` | Quit                     |
 
 ### Yolo Mode Modal
 
