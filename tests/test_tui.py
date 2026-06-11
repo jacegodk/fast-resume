@@ -441,22 +441,6 @@ class TestFormatDirectoryEdgeCases:
 # =============================================================================
 
 
-@pytest.fixture(autouse=True)
-def isolate_settings():
-    """Keep TUI tests independent of the user's real settings file.
-
-    Tests that need specific settings patch load_settings themselves; their
-    inner patch takes precedence over this one.
-    """
-    from fast_resume.settings import DEFAULTS
-
-    with (
-        patch("fast_resume.tui.app.load_settings", return_value=dict(DEFAULTS)),
-        patch("fast_resume.tui.app.save_settings"),
-    ):
-        yield
-
-
 @pytest.fixture
 def sample_sessions():
     """Create sample sessions for TUI testing."""
