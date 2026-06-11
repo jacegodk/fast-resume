@@ -66,22 +66,30 @@ class FastResumeApp(App):
         Binding("plus", "increase_preview", "+Preview", show=False),
         Binding("equals", "increase_preview", "+Preview", show=False),
         Binding("minus", "decrease_preview", "-Preview", show=False),
-        # Ctrl variants work even while typing in the search input. Ctrl+= is
-        # bound alongside Ctrl++ (same key unshifted), and legacy terminals
-        # report Ctrl+- as ctrl+underscore (0x1f).
-        Binding("ctrl+plus", "increase_preview", "+Preview", show=False, priority=True),
+        # Modifier variants work even while typing in the search input. Alt is
+        # included because Ctrl+(Shift+)+/- is taken by terminal font zoom
+        # (e.g. kitty). Ctrl+Alt+Shift+= is bound alongside for layouts where
+        # + is the shifted = key.
         Binding(
-            "ctrl+equals_sign",
+            "alt+ctrl+shift+plus",
             "increase_preview",
             "+Preview",
             show=False,
             priority=True,
         ),
         Binding(
-            "ctrl+minus", "decrease_preview", "-Preview", show=False, priority=True
+            "alt+ctrl+shift+equals_sign",
+            "increase_preview",
+            "+Preview",
+            show=False,
+            priority=True,
         ),
         Binding(
-            "ctrl+underscore", "decrease_preview", "-Preview", show=False, priority=True
+            "alt+ctrl+shift+minus",
+            "decrease_preview",
+            "-Preview",
+            show=False,
+            priority=True,
         ),
         # Scroll the preview pane without moving focus to it.
         Binding(

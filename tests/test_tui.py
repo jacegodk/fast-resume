@@ -939,10 +939,10 @@ class TestFastResumeAppPreview:
                 assert app.preview_height < initial_height
 
     @pytest.mark.asyncio
-    async def test_ctrl_plus_minus_resize_preview_without_focus(
+    async def test_ctrl_alt_shift_plus_minus_resize_preview_without_focus(
         self, mock_search_engine
     ):
-        """Ctrl++/Ctrl+- resize the preview while focus stays on the search input."""
+        """Ctrl+Alt+Shift +/- resize the preview while focus stays on the search input."""
         with patch(
             "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
         ):
@@ -955,12 +955,12 @@ class TestFastResumeAppPreview:
 
                 initial_height = app.preview_height
 
-                await pilot.press("ctrl+plus")
+                await pilot.press("alt+ctrl+shift+plus")
                 await pilot.pause()
                 assert app.preview_height > initial_height
 
-                await pilot.press("ctrl+minus")
-                await pilot.press("ctrl+minus")
+                await pilot.press("alt+ctrl+shift+minus")
+                await pilot.press("alt+ctrl+shift+minus")
                 await pilot.pause()
                 assert app.preview_height < initial_height
 

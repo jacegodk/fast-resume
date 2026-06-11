@@ -182,7 +182,7 @@ Options:
 | --------- | ------------------------------------- |
 | `F2`      | Toggle preview pane (or `Ctrl+\``)     |
 | `+` / `-` | Resize preview pane                   |
-| `Ctrl++` / `Ctrl+-` | Resize preview pane (works while typing) |
+| `Ctrl+Alt+Shift++` / `Ctrl+Alt+Shift+-` | Resize preview pane (works while typing) |
 | `Ctrl+↑` / `Ctrl+↓` | Scroll preview pane without focusing it |
 | `Ctrl+Page Up` / `Ctrl+Page Down` | Scroll preview pane by a page |
 | `Tab`     | Accept autocomplete suggestion        |
