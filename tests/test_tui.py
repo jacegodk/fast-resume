@@ -1000,6 +1000,53 @@ class TestFastResumeAppPreview:
                 assert search_input.has_focus
 
     @pytest.mark.asyncio
+    async def test_preview_scroll_resets_on_new_session(self, sample_sessions):
+        """Selecting a different session resets the preview scroll offset."""
+        long_content = "» Question\n\n" + "\n".join(
+            f"  Line {i}" for i in range(100)
+        )
+        sessions = [
+            Session(
+                id=f"session-{n}",
+                agent="claude",
+                title=f"Session {n}",
+                directory="/test",
+                timestamp=datetime.now(),
+                content=long_content,
+                message_count=2,
+                mtime=1705312200.0 - n,
+            )
+            for n in range(2)
+        ]
+        mock = MagicMock()
+        mock.search.return_value = sessions
+        mock.get_session_count.return_value = len(sessions)
+        mock._load_from_index.return_value = sessions
+        mock._sessions = sessions
+        mock._streaming_in_progress = False
+        mock.get_sessions_streaming.return_value = (sessions, 0, 0, 0)
+
+        with patch("fast_resume.tui.app.SessionSearch", return_value=mock):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                container = app.query_one("#preview-container")
+                assert container.max_scroll_y > 0
+
+                await pilot.press("ctrl+down")
+                await pilot.press("ctrl+down")
+                await pilot.pause()
+                assert container.scroll_y > 0
+
+                # Select the next session - scroll offset should reset
+                table = app.query_one("#results-table")
+                table.focus()
+                await pilot.press("down")
+                await pilot.pause()
+                assert app.selected_session.id == "session-1"
+                assert container.scroll_y == 0
+
+    @pytest.mark.asyncio
     async def test_ctrl_k_toggles_keys_overview(self, mock_search_engine):
         """Ctrl+K toggles the keys overview (help panel)."""
         from textual.widgets import HelpPanel

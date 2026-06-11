@@ -167,6 +167,7 @@ class FastResumeApp(App):
         self._search_timer: Timer | None = None
         self._available_update: str | None = None
         self._syncing_filter: bool = False  # Prevent infinite loops during sync
+        self._previewed_session_id: str | None = None
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
@@ -432,6 +433,15 @@ class FastResumeApp(App):
         self.selected_session = table.update_sessions(sessions, self._current_query)
         self._update_session_count()
 
+    def _show_preview(self, session: Session) -> None:
+        """Update the preview pane, resetting scroll when the session changes."""
+        self.query_one(SessionPreview).update_preview(session, self._current_query)
+        if session.id != self._previewed_session_id:
+            self._previewed_session_id = session.id
+            self.query_one("#preview-container", VerticalScroll).scroll_home(
+                animate=False
+            )
+
     def _update_selected_session(self) -> None:
         """Update the selected session based on cursor position."""
         try:
@@ -441,16 +451,14 @@ class FastResumeApp(App):
         session = table.get_selected_session()
         if session:
             self.selected_session = session
-            preview = self.query_one(SessionPreview)
-            preview.update_preview(session, self._current_query)
+            self._show_preview(session)
 
     @on(ResultsTable.Selected)
     def on_results_table_selected(self, event: ResultsTable.Selected) -> None:
         """Handle session selection in results table."""
         if event.session:
             self.selected_session = event.session
-            preview = self.query_one(SessionPreview)
-            preview.update_preview(event.session, self._current_query)
+            self._show_preview(event.session)
 
     @on(Input.Changed, "#search-input")
     def on_search_changed(self, event: Input.Changed) -> None:
