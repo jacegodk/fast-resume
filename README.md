@@ -63,7 +63,18 @@ This fork bundles features not yet released upstream:
 - **`Ctrl+N`** — filter the list to sessions you named yourself
 - **`F2` toggles the preview** — a layout-independent alternative (the default Ctrl+backtick is awkward on non-US keyboards)
 - **Remembered preview size** — the height you set with `+` / `-` persists between runs, capped at 80% of the window
+- **Preview control without focus** — `Ctrl+Alt+Shift` `+`/`-` resizes and `Ctrl+↑`/`Ctrl+↓` scrolls the preview while you keep typing; the scroll offset resets when you select another session
+- **`Ctrl+K` keys overview** — toggles a panel listing all bindings, docked next to `^p Commands` in the footer; `Esc` also closes the command palette now
+- **Resume-binary override** — an `agent_commands` setting resumes sessions with a custom executable (see below)
 - Silenced the `textual_image` cell-size warning on terminals without pixel reporting (e.g. Terminator, GNOME Terminal)
+
+To resume an agent's sessions with a different binary (e.g. a `claude` wrapper), add to `~/.cache/fast-resume/settings.json`:
+
+```json
+{ "agent_commands": { "claude": "claudetree" } }
+```
+
+Only the executable is replaced — the adapter's arguments (`--resume <id>`, yolo flags) are kept, so the override must be CLI-compatible with the original.
 
 Install the combined build straight from the fork with uv:
 
