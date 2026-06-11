@@ -1000,8 +1000,8 @@ class TestFastResumeAppPreview:
 
                 initial_height = app.preview_height
 
-                # Increase preview height (use 'equals' which maps to same action)
-                await pilot.press("equals")
+                # Increase preview height (use '=' which maps to same action)
+                await pilot.press("equals_sign")
                 await pilot.pause()
                 assert app.preview_height > initial_height
 
@@ -1038,7 +1038,7 @@ class TestFastResumeAppPreview:
                 app.query_one("#results-table").focus()
                 await pilot.pause()
                 for _ in range(20):
-                    await pilot.press("equals")
+                    await pilot.press("equals_sign")
                 await pilot.pause()
                 assert app.preview_height == 32
 
@@ -1061,6 +1061,174 @@ class TestFastResumeAppPreview:
 
                 # 80% of 10 == 8; the oversized preview must be clamped down
                 assert app.preview_height == 8
+
+    @pytest.mark.asyncio
+    async def test_ctrl_alt_shift_plus_minus_resize_preview_without_focus(
+        self, mock_search_engine
+    ):
+        """Ctrl+Alt+Shift +/- resize the preview while focus stays on the search input."""
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                # Search input has focus by default - don't move it
+                search_input = app.query_one("#search-input")
+                assert search_input.has_focus
+
+                initial_height = app.preview_height
+
+                await pilot.press("alt+ctrl+shift+plus")
+                await pilot.pause()
+                assert app.preview_height > initial_height
+
+                await pilot.press("alt+ctrl+shift+minus")
+                await pilot.press("alt+ctrl+shift+minus")
+                await pilot.pause()
+                assert app.preview_height < initial_height
+
+                # Focus never left the search input
+                assert search_input.has_focus
+
+    @pytest.mark.asyncio
+    async def test_ctrl_keys_scroll_preview_without_focus(self, mock_search_engine):
+        """Ctrl+Up/Down scroll the preview without focusing it."""
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                search_input = app.query_one("#search-input")
+                assert search_input.has_focus
+
+                # Fill the preview with enough lines to overflow its container
+                preview = app.query_one("#preview")
+                preview.update(Text("\n".join(f"line {i}" for i in range(100))))
+                await pilot.pause()
+
+                container = app.query_one("#preview-container")
+                assert container.max_scroll_y > 0
+                assert container.scroll_y == 0
+
+                await pilot.press("ctrl+down")
+                await pilot.pause()
+                assert container.scroll_y == 1
+
+                await pilot.press("ctrl+up")
+                await pilot.pause()
+                assert container.scroll_y == 0
+
+                # Focus never left the search input
+                assert search_input.has_focus
+
+    @pytest.mark.asyncio
+    async def test_preview_scroll_resets_on_new_session(self, sample_sessions):
+        """Selecting a different session resets the preview scroll offset."""
+        long_content = "» Question\n\n" + "\n".join(
+            f"  Line {i}" for i in range(100)
+        )
+        sessions = [
+            Session(
+                id=f"session-{n}",
+                agent="claude",
+                title=f"Session {n}",
+                directory="/test",
+                timestamp=datetime.now(),
+                content=long_content,
+                message_count=2,
+                mtime=1705312200.0 - n,
+            )
+            for n in range(2)
+        ]
+        mock = MagicMock()
+        mock.search.return_value = sessions
+        mock.get_session_count.return_value = len(sessions)
+        mock._load_from_index.return_value = sessions
+        mock._sessions = sessions
+        mock._streaming_in_progress = False
+        mock.get_sessions_streaming.return_value = (sessions, 0, 0, 0)
+
+        with patch("fast_resume.tui.app.SessionSearch", return_value=mock):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                container = app.query_one("#preview-container")
+                assert container.max_scroll_y > 0
+
+                await pilot.press("ctrl+down")
+                await pilot.press("ctrl+down")
+                await pilot.pause()
+                assert container.scroll_y > 0
+
+                # Select the next session - scroll offset should reset
+                table = app.query_one("#results-table")
+                table.focus()
+                await pilot.press("down")
+                await pilot.pause()
+                assert app.selected_session.id == "session-1"
+                assert container.scroll_y == 0
+
+    @pytest.mark.asyncio
+    async def test_ctrl_k_toggles_keys_overview(self, mock_search_engine):
+        """Ctrl+K toggles the keys overview (help panel)."""
+        from textual.widgets import HelpPanel
+
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                assert len(app.query(HelpPanel)) == 0
+
+                await pilot.press("ctrl+k")
+                await pilot.pause()
+                assert len(app.query(HelpPanel)) == 1
+
+                await pilot.press("ctrl+k")
+                await pilot.pause()
+                assert len(app.query(HelpPanel)) == 0
+
+    @pytest.mark.asyncio
+    async def test_keys_hint_docked_right_with_command_palette(
+        self, mock_search_engine
+    ):
+        """The ^k hint sits in the footer's right-docked group, before ^p."""
+        from fast_resume.tui.app import FastResumeFooter
+
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                footer = app.query_one(FastResumeFooter)
+                group = footer.query_one(".-right-hints")
+                keys = [getattr(w, "key", None) for w in group.children]
+                assert keys == ["ctrl+k", "ctrl+p"]
+
+    @pytest.mark.asyncio
+    async def test_escape_closes_command_palette(self, mock_search_engine):
+        """Escape cancels the command palette instead of doing nothing."""
+        from textual.command import CommandPalette
+
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+                assert isinstance(app.screen, CommandPalette)
+
+                await pilot.press("escape")
+                await pilot.pause()
+                assert not isinstance(app.screen, CommandPalette)
+                assert app.is_running
 
 
 class TestFastResumeAppResumeCommand:

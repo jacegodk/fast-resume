@@ -8,12 +8,14 @@ from collections.abc import Callable
 
 from textual import events, on, work
 from textual.app import App, ComposeResult
+from textual.command import CommandPalette
 from textual.css.query import NoMatches
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, HorizontalGroup, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Footer, Input, Label
+from textual.widget import Widget
+from textual.widgets import Footer, HelpPanel, Input, Label
 
 from .. import __version__
 from ..adapters.base import ParseError, Session
@@ -33,6 +35,28 @@ from .utils import copy_to_clipboard
 logger = logging.getLogger(__name__)
 
 
+class FastResumeFooter(Footer):
+    """Footer that shows the keys-overview hint on the right, next to ^p."""
+
+    def compose(self) -> ComposeResult:
+        # Two siblings docked right would overlap, so collect the ^k hint and
+        # the command palette key into a single right-docked group.
+        right: list[Widget] = []
+        for widget in super().compose():
+            if getattr(widget, "key", None) == "ctrl+k" or widget.has_class(
+                "-command-palette"
+            ):
+                right.append(widget)
+            else:
+                yield widget
+        right.sort(key=lambda w: w.has_class("-command-palette"))
+        with HorizontalGroup(classes="-right-hints"):
+            for widget in right:
+                widget.remove_class("-command-palette")
+                widget.add_class("-keys-hint")
+                yield widget
+
+
 class FastResumeApp(App):
     """Main TUI application for fast-resume."""
 
@@ -47,7 +71,10 @@ class FastResumeApp(App):
     PREVIEW_MAX_FRACTION = 0.8
 
     BINDINGS = [
-        Binding("escape", "quit", "Quit", priority=True),
+        # key_display advertises Ctrl+Q alongside Escape in the footer; the
+        # footer shows one entry per action, so the extra keys stay hidden.
+        Binding("escape", "quit", "Quit", priority=True, key_display="^q / esc"),
+        Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("q", "quit", "Quit", show=False),
         Binding("ctrl+c", "quit", "Quit", show=False),
         Binding("/", "focus_search", "Search", priority=True),
@@ -70,9 +97,49 @@ class FastResumeApp(App):
         Binding("pagedown", "page_down", "Page Down", show=False),
         Binding("pageup", "page_up", "Page Up", show=False),
         Binding("plus", "increase_preview", "+Preview", show=False),
-        Binding("equals", "increase_preview", "+Preview", show=False),
+        Binding("equals_sign", "increase_preview", "+Preview", show=False),
         Binding("minus", "decrease_preview", "-Preview", show=False),
-        Binding("ctrl+p", "command_palette", "Commands"),
+        # Modifier variants work even while typing in the search input. Alt is
+        # included because Ctrl+(Shift+)+/- is taken by terminal font zoom
+        # (e.g. kitty). Ctrl+Alt+Shift+= is bound alongside for layouts where
+        # + is the shifted = key. The shared key_display collapses the
+        # variants into one entry in the keys overview.
+        Binding(
+            "alt+ctrl+shift+plus",
+            "increase_preview",
+            "+Preview",
+            show=False,
+            priority=True,
+            key_display="ctrl+alt+shift +",
+        ),
+        Binding(
+            "alt+ctrl+shift+equals_sign",
+            "increase_preview",
+            "+Preview",
+            show=False,
+            priority=True,
+            key_display="ctrl+alt+shift +",
+        ),
+        Binding(
+            "alt+ctrl+shift+minus",
+            "decrease_preview",
+            "-Preview",
+            show=False,
+            priority=True,
+            key_display="ctrl+alt+shift -",
+        ),
+        # Scroll the preview pane without moving focus to it.
+        Binding(
+            "ctrl+down", "scroll_preview_down", "Scroll preview", show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+up", "scroll_preview_up", "Scroll preview", show=False, priority=True
+        ),
+        Binding("ctrl+k", "toggle_help_panel", "Keys", priority=True),
+        # show=False because the footer already renders the command palette key
+        # in its dedicated right-hand slot; show=True would list it twice.
+        Binding("ctrl+p", "command_palette", "Commands", show=False),
     ]
 
     show_preview: reactive[bool] = reactive(True)
@@ -108,6 +175,7 @@ class FastResumeApp(App):
         self._available_update: str | None = None
         self._syncing_filter: bool = False  # Prevent infinite loops during sync
         self._settings = load_settings()
+        self._previewed_session_id: str | None = None
 
     def compose(self) -> ComposeResult:
         """Create child widgets."""
@@ -139,7 +207,7 @@ class FastResumeApp(App):
                     yield ResultsTable(id="results-table")
                 with VerticalScroll(id="preview-container"):
                     yield SessionPreview()
-        yield Footer()
+        yield FastResumeFooter()
 
     def on_mount(self) -> None:
         """Set up the app when mounted."""
@@ -390,6 +458,15 @@ class FastResumeApp(App):
         self.selected_session = table.update_sessions(sessions, self._current_query)
         self._update_session_count()
 
+    def _show_preview(self, session: Session) -> None:
+        """Update the preview pane, resetting scroll when the session changes."""
+        self.query_one(SessionPreview).update_preview(session, self._current_query)
+        if session.id != self._previewed_session_id:
+            self._previewed_session_id = session.id
+            self.query_one("#preview-container", VerticalScroll).scroll_home(
+                animate=False
+            )
+
     def _update_selected_session(self) -> None:
         """Update the selected session based on cursor position."""
         try:
@@ -399,16 +476,14 @@ class FastResumeApp(App):
         session = table.get_selected_session()
         if session:
             self.selected_session = session
-            preview = self.query_one(SessionPreview)
-            preview.update_preview(session, self._current_query)
+            self._show_preview(session)
 
     @on(ResultsTable.Selected)
     def on_results_table_selected(self, event: ResultsTable.Selected) -> None:
         """Handle session selection in results table."""
         if event.session:
             self.selected_session = event.session
-            preview = self.query_one(SessionPreview)
-            preview.update_preview(event.session, self._current_query)
+            self._show_preview(event.session)
 
     @on(Input.Changed, "#search-input")
     def on_search_changed(self, event: Input.Changed) -> None:
@@ -631,6 +706,23 @@ class FastResumeApp(App):
         self._settings["preview_height"] = self.preview_height
         save_settings(self._settings)
 
+    def action_scroll_preview_down(self) -> None:
+        """Scroll the preview pane down one line."""
+        self.query_one("#preview-container", VerticalScroll).scroll_down(animate=False)
+
+    def action_scroll_preview_up(self) -> None:
+        """Scroll the preview pane up one line."""
+        self.query_one("#preview-container", VerticalScroll).scroll_up(animate=False)
+
+    def action_toggle_help_panel(self) -> None:
+        """Toggle the keys overview panel."""
+        try:
+            self.query_one(HelpPanel)
+        except NoMatches:
+            self.action_show_help_panel()
+        else:
+            self.action_hide_help_panel()
+
     def _set_filter(self, agent: str | None) -> None:
         """Set the agent filter and refresh results, syncing query string."""
         self.active_filter = agent
@@ -668,11 +760,15 @@ class FastResumeApp(App):
         self._set_filter(FILTER_KEYS[next_index])
 
     async def action_quit(self) -> None:
-        """Quit the app, or dismiss modal if one is open."""
+        """Quit the app, or dismiss the modal/command palette if one is open."""
         if len(self.screen_stack) > 1:
             top_screen = self.screen_stack[-1]
             if isinstance(top_screen, YoloModeModal):
                 top_screen.dismiss(None)
+            elif isinstance(top_screen, CommandPalette):
+                # The app-level priority escape binding swallows the palette's
+                # own escape key, so forward it to the palette's action.
+                await top_screen.run_action("escape")
             return
         self.exit()
 

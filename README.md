@@ -205,11 +205,14 @@ Options:
 | --------- | ------------------------------------- |
 | `F2`      | Toggle preview pane (or `Ctrl+\``)     |
 | `+` / `-` | Resize preview pane                   |
+| `Ctrl+Alt+Shift++` / `Ctrl+Alt+Shift+-` | Resize preview pane (works while typing) |
+| `Ctrl+↑` / `Ctrl+↓` | Scroll preview pane without focusing it |
 | `Tab`     | Accept autocomplete suggestion        |
 | `c`       | Copy full resume command to clipboard |
 | `Ctrl+N`  | Toggle showing only named sessions    |
+| `Ctrl+K`  | Toggle keys overview                  |
 | `Ctrl+P`  | Open command palette                  |
-| `q`/`Esc` | Quit                                  |
+| `q` / `Esc` / `Ctrl+Q` | Quit                     |
 
 The preview pane size you set with `+` / `-` is remembered across sessions.
 
