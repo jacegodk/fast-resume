@@ -91,18 +91,20 @@ class FastResumeApp(App):
         Binding("pagedown", "page_down", "Page Down", show=False),
         Binding("pageup", "page_up", "Page Up", show=False),
         Binding("plus", "increase_preview", "+Preview", show=False),
-        Binding("equals", "increase_preview", "+Preview", show=False),
+        Binding("equals_sign", "increase_preview", "+Preview", show=False),
         Binding("minus", "decrease_preview", "-Preview", show=False),
         # Modifier variants work even while typing in the search input. Alt is
         # included because Ctrl+(Shift+)+/- is taken by terminal font zoom
         # (e.g. kitty). Ctrl+Alt+Shift+= is bound alongside for layouts where
-        # + is the shifted = key.
+        # + is the shifted = key. The shared key_display collapses the
+        # variants into one entry in the keys overview.
         Binding(
             "alt+ctrl+shift+plus",
             "increase_preview",
             "+Preview",
             show=False,
             priority=True,
+            key_display="ctrl+alt+shift +",
         ),
         Binding(
             "alt+ctrl+shift+equals_sign",
@@ -110,6 +112,7 @@ class FastResumeApp(App):
             "+Preview",
             show=False,
             priority=True,
+            key_display="ctrl+alt+shift +",
         ),
         Binding(
             "alt+ctrl+shift+minus",
@@ -117,6 +120,7 @@ class FastResumeApp(App):
             "-Preview",
             show=False,
             priority=True,
+            key_display="ctrl+alt+shift -",
         ),
         # Scroll the preview pane without moving focus to it.
         Binding(

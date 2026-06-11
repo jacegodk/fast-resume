@@ -927,8 +927,8 @@ class TestFastResumeAppPreview:
 
                 initial_height = app.preview_height
 
-                # Increase preview height (use 'equals' which maps to same action)
-                await pilot.press("equals")
+                # Increase preview height (use '=' which maps to same action)
+                await pilot.press("equals_sign")
                 await pilot.pause()
                 assert app.preview_height > initial_height
 
