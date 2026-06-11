@@ -441,6 +441,22 @@ class TestFormatDirectoryEdgeCases:
 # =============================================================================
 
 
+@pytest.fixture(autouse=True)
+def isolate_settings():
+    """Keep TUI tests independent of the user's real settings file.
+
+    Tests that need specific settings patch load_settings themselves; their
+    inner patch takes precedence over this one.
+    """
+    from fast_resume.settings import DEFAULTS
+
+    with (
+        patch("fast_resume.tui.app.load_settings", return_value=dict(DEFAULTS)),
+        patch("fast_resume.tui.app.save_settings"),
+    ):
+        yield
+
+
 @pytest.fixture
 def sample_sessions():
     """Create sample sessions for TUI testing."""
@@ -1136,6 +1152,69 @@ class TestFastResumeAppResumeCommand:
                 # Should be first session
                 directory = app.get_resume_directory()
                 assert directory == "/home/user/web-app"
+
+
+class TestAgentCommandOverride:
+    """Tests for the agent_commands resume-binary override setting."""
+
+    @pytest.mark.asyncio
+    async def test_resume_uses_overridden_binary(self, mock_search_engine):
+        """agent_commands swaps the executable but keeps the arguments."""
+        settings = {"preview_height": 12, "agent_commands": {"claude": "claudetree"}}
+        with (
+            patch("fast_resume.tui.app.SessionSearch", return_value=mock_search_engine),
+            patch("fast_resume.tui.app.load_settings", return_value=settings),
+            patch("fast_resume.tui.app.save_settings"),
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert app.get_resume_command() == [
+                    "claudetree",
+                    "--resume",
+                    "session-1",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_override_only_applies_to_configured_agent(
+        self, mock_search_engine
+    ):
+        """An override for one agent leaves other agents' commands alone."""
+        settings = {"preview_height": 12, "agent_commands": {"codex": "codextree"}}
+        with (
+            patch("fast_resume.tui.app.SessionSearch", return_value=mock_search_engine),
+            patch("fast_resume.tui.app.load_settings", return_value=settings),
+            patch("fast_resume.tui.app.save_settings"),
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                # Selected session is a claude session; codex override must not apply
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert app.get_resume_command() == [
+                    "claude",
+                    "--resume",
+                    "session-1",
+                ]
+
+    @pytest.mark.asyncio
+    async def test_no_override_by_default(self, mock_search_engine):
+        """Without agent_commands configured the adapter command is unchanged."""
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert app.get_resume_command() == ["claude", "--resume", "session-1"]
 
 
 class TestFastResumeAppYoloModal:

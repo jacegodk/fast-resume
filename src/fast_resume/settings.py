@@ -16,6 +16,9 @@ SETTINGS_FILE = CACHE_DIR / "settings.json"
 # these, so missing keys always resolve to a sensible default.
 DEFAULTS: dict = {
     "preview_height": 12,
+    # Per-agent overrides for the resume binary, e.g. {"claude": "claudetree"}.
+    # Only the executable is replaced; the adapter's arguments are kept.
+    "agent_commands": {},
 }
 
 
