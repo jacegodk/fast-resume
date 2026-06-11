@@ -1020,6 +1020,27 @@ class TestFastResumeAppPreview:
                 await pilot.pause()
                 assert len(app.query(HelpPanel)) == 0
 
+    @pytest.mark.asyncio
+    async def test_escape_closes_command_palette(self, mock_search_engine):
+        """Escape cancels the command palette instead of doing nothing."""
+        from textual.command import CommandPalette
+
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+                assert isinstance(app.screen, CommandPalette)
+
+                await pilot.press("escape")
+                await pilot.pause()
+                assert not isinstance(app.screen, CommandPalette)
+                assert app.is_running
+
 
 class TestFastResumeAppResumeCommand:
     """Tests for resume command functionality."""

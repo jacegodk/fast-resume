@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from textual import on, work
 from textual.app import App, ComposeResult
+from textual.command import CommandPalette
 from textual.css.query import NoMatches
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -103,7 +104,9 @@ class FastResumeApp(App):
             "ctrl+up", "scroll_preview_up", "Scroll preview", show=False, priority=True
         ),
         Binding("ctrl+k", "toggle_help_panel", "Keys", priority=True),
-        Binding("ctrl+p", "command_palette", "Commands"),
+        # show=False because the footer already renders the command palette key
+        # in its dedicated right-hand slot; show=True would list it twice.
+        Binding("ctrl+p", "command_palette", "Commands", show=False),
     ]
 
     show_preview: reactive[bool] = reactive(True)
@@ -665,11 +668,15 @@ class FastResumeApp(App):
         self._set_filter(FILTER_KEYS[next_index])
 
     async def action_quit(self) -> None:
-        """Quit the app, or dismiss modal if one is open."""
+        """Quit the app, or dismiss the modal/command palette if one is open."""
         if len(self.screen_stack) > 1:
             top_screen = self.screen_stack[-1]
             if isinstance(top_screen, YoloModeModal):
                 top_screen.dismiss(None)
+            elif isinstance(top_screen, CommandPalette):
+                # The app-level priority escape binding swallows the palette's
+                # own escape key, so forward it to the palette's action.
+                await top_screen.run_action("escape")
             return
         self.exit()
 
