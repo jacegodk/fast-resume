@@ -969,7 +969,7 @@ class TestFastResumeAppPreview:
 
     @pytest.mark.asyncio
     async def test_ctrl_keys_scroll_preview_without_focus(self, mock_search_engine):
-        """Ctrl+Up/Down and Ctrl+PgUp/PgDn scroll the preview without focusing it."""
+        """Ctrl+Up/Down scroll the preview without focusing it."""
         with patch(
             "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
         ):
@@ -996,17 +996,29 @@ class TestFastResumeAppPreview:
                 await pilot.pause()
                 assert container.scroll_y == 0
 
-                await pilot.press("ctrl+pagedown")
-                await pilot.pause()
-                page_offset = container.scroll_y
-                assert page_offset > 1
-
-                await pilot.press("ctrl+pageup")
-                await pilot.pause()
-                assert container.scroll_y == 0
-
                 # Focus never left the search input
                 assert search_input.has_focus
+
+    @pytest.mark.asyncio
+    async def test_ctrl_k_toggles_keys_overview(self, mock_search_engine):
+        """Ctrl+K toggles the keys overview (help panel)."""
+        from textual.widgets import HelpPanel
+
+        with patch(
+            "fast_resume.tui.app.SessionSearch", return_value=mock_search_engine
+        ):
+            app = FastResumeApp()
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                assert len(app.query(HelpPanel)) == 0
+
+                await pilot.press("ctrl+k")
+                await pilot.pause()
+                assert len(app.query(HelpPanel)) == 1
+
+                await pilot.press("ctrl+k")
+                await pilot.pause()
+                assert len(app.query(HelpPanel)) == 0
 
 
 class TestFastResumeAppResumeCommand:

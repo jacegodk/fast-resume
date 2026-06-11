@@ -184,9 +184,9 @@ Options:
 | `+` / `-` | Resize preview pane                   |
 | `Ctrl+Alt+Shift++` / `Ctrl+Alt+Shift+-` | Resize preview pane (works while typing) |
 | `Ctrl+↑` / `Ctrl+↓` | Scroll preview pane without focusing it |
-| `Ctrl+Page Up` / `Ctrl+Page Down` | Scroll preview pane by a page |
 | `Tab`     | Accept autocomplete suggestion        |
 | `c`       | Copy full resume command to clipboard |
+| `Ctrl+K`  | Toggle keys overview                  |
 | `Ctrl+P`  | Open command palette                  |
 | `q`/`Esc` | Quit                                  |
 

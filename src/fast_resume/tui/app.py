@@ -13,7 +13,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Footer, Input, Label
+from textual.widgets import Footer, HelpPanel, Input, Label
 
 from .. import __version__
 from ..adapters.base import ParseError, Session
@@ -99,20 +99,7 @@ class FastResumeApp(App):
         Binding(
             "ctrl+up", "scroll_preview_up", "Scroll preview", show=False, priority=True
         ),
-        Binding(
-            "ctrl+pagedown",
-            "scroll_preview_page_down",
-            "Scroll preview",
-            show=False,
-            priority=True,
-        ),
-        Binding(
-            "ctrl+pageup",
-            "scroll_preview_page_up",
-            "Scroll preview",
-            show=False,
-            priority=True,
-        ),
+        Binding("ctrl+k", "toggle_help_panel", "Keys", priority=True),
         Binding("ctrl+p", "command_palette", "Commands"),
     ]
 
@@ -629,17 +616,14 @@ class FastResumeApp(App):
         """Scroll the preview pane up one line."""
         self.query_one("#preview-container", VerticalScroll).scroll_up(animate=False)
 
-    def action_scroll_preview_page_down(self) -> None:
-        """Scroll the preview pane down one page."""
-        self.query_one("#preview-container", VerticalScroll).scroll_page_down(
-            animate=False
-        )
-
-    def action_scroll_preview_page_up(self) -> None:
-        """Scroll the preview pane up one page."""
-        self.query_one("#preview-container", VerticalScroll).scroll_page_up(
-            animate=False
-        )
+    def action_toggle_help_panel(self) -> None:
+        """Toggle the keys overview panel."""
+        try:
+            self.query_one(HelpPanel)
+        except NoMatches:
+            self.action_show_help_panel()
+        else:
+            self.action_hide_help_panel()
 
     def _set_filter(self, agent: str | None) -> None:
         """Set the agent filter and refresh results, syncing query string."""
