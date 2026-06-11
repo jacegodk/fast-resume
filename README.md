@@ -68,7 +68,7 @@ This fork bundles features not yet released upstream:
 - **Resume-binary override** — an `agent_commands` setting resumes sessions with a custom executable (see below)
 - Silenced the `textual_image` cell-size warning on terminals without pixel reporting (e.g. Terminator, GNOME Terminal)
 
-To resume an agent's sessions with a different binary (e.g. a `claude` wrapper), add to `~/.cache/fast-resume/settings.json`:
+To resume an agent's sessions with a different binary (e.g. a `claude` wrapper), add to `~/.config/fast-resume/settings.json`:
 
 ```json
 { "agent_commands": { "claude": "claudetree" } }
