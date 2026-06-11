@@ -561,11 +561,21 @@ class FastResumeApp(App):
             return
         self._resolve_yolo_mode(self._do_copy_command, self._on_copy_yolo_modal_result)
 
+    def _override_agent_command(self, cmd: list[str], agent: str) -> list[str]:
+        """Replace the resume executable with a user-configured one, if any."""
+        override = self._settings.get("agent_commands", {}).get(agent)
+        if cmd and override:
+            return [override, *cmd[1:]]
+        return cmd
+
     def _do_copy_command(self, yolo: bool) -> None:
         """Execute the copy command with specified yolo mode."""
         assert self.selected_session is not None
         resume_cmd = self.search_engine.get_resume_command(
             self.selected_session, yolo=yolo
+        )
+        resume_cmd = self._override_agent_command(
+            resume_cmd, self.selected_session.agent
         )
         if not resume_cmd:
             self.notify("No resume command available", severity="warning", timeout=2)
@@ -605,8 +615,9 @@ class FastResumeApp(App):
     def _do_resume(self, yolo: bool) -> None:
         """Execute the resume with specified yolo mode."""
         assert self.selected_session is not None
-        self._resume_command = self.search_engine.get_resume_command(
-            self.selected_session, yolo=yolo
+        self._resume_command = self._override_agent_command(
+            self.search_engine.get_resume_command(self.selected_session, yolo=yolo),
+            self.selected_session.agent,
         )
         self._resume_directory = self.selected_session.directory
         self.exit()
