@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use crate::config::{AGENT_ORDER, is_agent};
@@ -6,7 +7,9 @@ use crate::query::{Filter, parse_query};
 use crate::search::SearchEngine;
 
 use super::images::AgentImages;
+use super::preview::render_preview_lines;
 use super::text::char_to_byte_idx;
+use super::theme::Theme;
 
 const DATE_SUGGESTIONS: [&str; 4] = ["today", "yesterday", "week", "month"];
 
@@ -60,8 +63,16 @@ pub(super) struct YoloModal {
     pub(super) selected: bool,
 }
 
+struct PreviewCache {
+    session_id: String,
+    mtime: f64,
+    query: String,
+    lines: Vec<ratatui::text::Line<'static>>,
+}
+
 pub(super) struct AppState {
     pub(super) engine: SearchEngine,
+    preview_cache: RefCell<Option<PreviewCache>>,
     pub(super) visible: Vec<Session>,
     pub(super) query: String,
     pub(super) cursor: usize,
@@ -76,8 +87,10 @@ pub(super) struct AppState {
     pub(super) refresh_status: String,
     pub(super) last_search_ms: f64,
     pub(super) show_preview: bool,
+    pub(super) show_help: bool,
     pub(super) modal: Option<YoloModal>,
     pub(super) images: Option<AgentImages>,
+    pub(super) theme: Theme,
     search_generation: u64,
     applied_search_generation: u64,
     search_requested: bool,
@@ -86,6 +99,28 @@ pub(super) struct AppState {
 }
 
 impl AppState {
+    /// Rendering the preview lowercases and highlights the full session
+    /// content, so the result is cached per (session, mtime, query) instead
+    /// of being recomputed on every frame while the user types.
+    pub(super) fn preview_lines(&self, session: &Session) -> Vec<ratatui::text::Line<'static>> {
+        let mut cache = self.preview_cache.borrow_mut();
+        if let Some(cached) = cache.as_ref()
+            && cached.session_id == session.id
+            && cached.mtime == session.mtime
+            && cached.query == self.query
+        {
+            return cached.lines.clone();
+        }
+        let lines = render_preview_lines(session, &self.query, &self.theme);
+        *cache = Some(PreviewCache {
+            session_id: session.id.clone(),
+            mtime: session.mtime,
+            query: self.query.clone(),
+            lines: lines.clone(),
+        });
+        lines
+    }
+
     pub(super) fn new(
         query: String,
         agent_filter: Option<String>,
@@ -93,9 +128,11 @@ impl AppState {
         yolo: bool,
         engine: SearchEngine,
         images: Option<AgentImages>,
+        theme: Theme,
     ) -> Self {
         let mut state = Self {
             engine,
+            preview_cache: RefCell::new(None),
             visible: Vec::new(),
             cursor: query.chars().count(),
             query,
@@ -110,8 +147,10 @@ impl AppState {
             refresh_status: "refreshing session stores".to_string(),
             last_search_ms: 0.0,
             show_preview: true,
+            show_help: false,
             modal: None,
             images,
+            theme,
             search_generation: 0,
             applied_search_generation: 0,
             search_requested: false,
@@ -288,6 +327,16 @@ impl AppState {
         self.agent_filter.is_none() && !query_has_agent_filter(&self.query)
     }
 
+    pub(super) fn agent_filters_with_sessions(&self) -> Vec<(&'static str, usize)> {
+        AGENT_ORDER
+            .iter()
+            .filter_map(|agent| {
+                let count = self.engine.count_for_agent(Some(agent));
+                (count > 0).then_some((*agent, count))
+            })
+            .collect()
+    }
+
     pub(super) fn count_agent_filter(&self) -> Option<String> {
         if let Some(agent) = single_query_agent_filter(&self.query) {
             return Some(agent);
@@ -318,13 +367,18 @@ impl AppState {
     }
 
     pub(super) fn cycle_agent(&mut self, reverse: bool) {
+        let available = self.agent_filters_with_sessions();
         let active = self.active_agent_filter();
         let current = active
             .as_deref()
-            .and_then(|agent| AGENT_ORDER.iter().position(|candidate| *candidate == agent))
+            .and_then(|agent| {
+                available
+                    .iter()
+                    .position(|(candidate, _)| *candidate == agent)
+            })
             .map(|idx| idx + 1)
             .unwrap_or(0);
-        let len = AGENT_ORDER.len() + 1;
+        let len = available.len() + 1;
         let next = if reverse {
             (current + len - 1) % len
         } else {
@@ -333,7 +387,7 @@ impl AppState {
         let next_agent = if next == 0 {
             None
         } else {
-            Some(AGENT_ORDER[next - 1].to_string())
+            Some(available[next - 1].0.to_string())
         };
         self.query = update_agent_in_query(&self.query, next_agent.as_deref());
         self.cursor = self.query.chars().count();
@@ -350,24 +404,40 @@ impl AppState {
     }
 
     pub(super) fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let start = char_to_byte_idx(&self.query, self.cursor - 1);
-        let end = char_to_byte_idx(&self.query, self.cursor);
-        self.query.replace_range(start..end, "");
-        self.cursor -= 1;
-        self.clear_explicit_filter_if_query_has_agent();
-        self.request_search();
+        self.delete_char_range(self.cursor.saturating_sub(1), self.cursor);
     }
 
     pub(super) fn delete(&mut self) {
-        if self.cursor >= self.query.chars().count() {
+        self.delete_char_range(self.cursor, self.cursor.saturating_add(1));
+    }
+
+    pub(super) fn delete_to_start(&mut self) {
+        self.delete_char_range(0, self.cursor);
+    }
+
+    pub(super) fn delete_previous_word(&mut self) {
+        let chars: Vec<_> = self.query.chars().collect();
+        let mut start = self.cursor.min(chars.len());
+        while start > 0 && chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        self.delete_char_range(start, self.cursor);
+    }
+
+    fn delete_char_range(&mut self, start: usize, end: usize) {
+        let char_count = self.query.chars().count();
+        let start = start.min(char_count);
+        let end = end.min(char_count);
+        if start >= end {
             return;
         }
-        let start = char_to_byte_idx(&self.query, self.cursor);
-        let end = char_to_byte_idx(&self.query, self.cursor + 1);
-        self.query.replace_range(start..end, "");
+        let start_byte = char_to_byte_idx(&self.query, start);
+        let end_byte = char_to_byte_idx(&self.query, end);
+        self.query.replace_range(start_byte..end_byte, "");
+        self.cursor = start;
         self.clear_explicit_filter_if_query_has_agent();
         self.request_search();
     }

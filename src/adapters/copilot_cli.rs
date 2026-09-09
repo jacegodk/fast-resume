@@ -11,8 +11,8 @@ use crate::config;
 use crate::model::{RawAdapterStats, Session, file_mtime_seconds, file_timestamp, truncate_title};
 
 use super::shared::{
-    IncrementalParse, copilot_fallback_session_id, failed_incremental_scan, incremental_from_files,
-    incremental_from_files_streaming, incremental_parse_jsonl, raw_stats_for_tree, string_at,
+    IncrementalParse, SessionFileScan, build_resume_command, copilot_fallback_session_id,
+    incremental_parse_jsonl, incremental_scan, raw_stats_for_tree, string_at,
 };
 use super::{Adapter, IncrementalScan, KnownSessions, SessionCallback};
 
@@ -51,16 +51,7 @@ impl Adapter for CopilotCliAdapter {
     }
 
     fn find_sessions_incremental(&self, known: &KnownSessions) -> IncrementalScan {
-        let Some((current_files, complete)) = self.scan_session_files() else {
-            return failed_incremental_scan(self.name());
-        };
-        let mut scan = incremental_from_files(self.name(), known, current_files, |path| {
-            self.parse_session_incremental(path)
-        });
-        if !complete {
-            scan.deleted_ids.clear();
-        }
-        scan
+        self.incremental(known, None)
     }
 
     fn find_sessions_incremental_streaming(
@@ -68,29 +59,11 @@ impl Adapter for CopilotCliAdapter {
         known: &KnownSessions,
         on_session: &mut SessionCallback<'_>,
     ) -> IncrementalScan {
-        let Some((current_files, complete)) = self.scan_session_files() else {
-            return failed_incremental_scan(self.name());
-        };
-        let mut scan = incremental_from_files_streaming(
-            self.name(),
-            known,
-            current_files,
-            |path| self.parse_session_incremental(path),
-            on_session,
-        );
-        if !complete {
-            scan.deleted_ids.clear();
-        }
-        scan
+        self.incremental(known, Some(on_session))
     }
 
     fn resume_command(&self, session: &Session, yolo: bool) -> Vec<String> {
-        let mut cmd = vec!["copilot".to_string()];
-        if yolo {
-            cmd.push("--yolo".to_string());
-        }
-        cmd.extend(["--resume".to_string(), session.id.clone()]);
-        cmd
+        build_resume_command("copilot", &["--yolo"], yolo, &["--resume"], &session.id)
     }
 
     fn raw_stats(&self) -> RawAdapterStats {
@@ -99,7 +72,21 @@ impl Adapter for CopilotCliAdapter {
 }
 
 impl CopilotCliAdapter {
-    fn scan_session_files(&self) -> Option<(HashMap<String, (PathBuf, f64)>, bool)> {
+    fn incremental(
+        &self,
+        known: &KnownSessions,
+        on_session: Option<&mut SessionCallback<'_>>,
+    ) -> IncrementalScan {
+        incremental_scan(
+            self.name(),
+            known,
+            self.scan_session_files(),
+            |path| self.parse_session_incremental(path),
+            on_session,
+        )
+    }
+
+    fn scan_session_files(&self) -> Option<SessionFileScan> {
         let mut current_files = HashMap::new();
         let mut complete = true;
         if !self.sessions_dir.exists() {
@@ -201,7 +188,7 @@ impl CopilotCliAdapter {
                     if !content.is_empty() {
                         messages.push(format!("» {content}"));
                         turns += 1;
-                        if first_user_message.is_empty() && content.chars().count() > 10 {
+                        if first_user_message.is_empty() {
                             first_user_message = content;
                         }
                     }
@@ -297,6 +284,29 @@ mod tests {
             adapter.resume_command(&sessions[0], true),
             vec!["copilot", "--yolo", "--resume", "copilot-1"]
         );
+    }
+
+    #[test]
+    fn parses_session_with_short_user_prompt() {
+        let temp = tempdir().unwrap();
+        let sessions_dir = temp.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        write_jsonl(
+            &sessions_dir.join("short-prompt.jsonl"),
+            &[
+                json!({"type": "session.start", "data": {"sessionId": "copilot-short"}}),
+                json!({"type": "user.message", "data": {"content": "Hi"}}),
+                json!({"type": "assistant.message", "data": {"content": "Hello"}}),
+            ],
+        );
+
+        let adapter = CopilotCliAdapter { sessions_dir };
+        let sessions = adapter.find_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "copilot-short");
+        assert_eq!(sessions[0].title, "Hi");
+        assert_eq!(sessions[0].message_count, 2);
     }
 
     #[test]

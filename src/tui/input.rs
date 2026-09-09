@@ -9,11 +9,34 @@ use super::state::{AppState, PENDING_SEARCH_STATUS, PREVIEW_RATIO_STEP, PendingA
 use super::text::{shell_join, shell_quote};
 
 pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<Option<TuiExit>> {
+    if state.show_help {
+        if matches!(key.code, KeyCode::F(1) | KeyCode::Esc) {
+            state.show_help = false;
+        }
+        return Ok(None);
+    }
+    if key.code == KeyCode::F(1) {
+        state.show_help = true;
+        return Ok(None);
+    }
     if state.modal.is_some() {
         return handle_modal_key(state, key);
     }
 
     match (key.code, key.modifiers) {
+        (KeyCode::Char('a'), KeyModifiers::CONTROL) => state.cursor = 0,
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            state.cursor = state.cursor.saturating_sub(1);
+        }
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => state.delete(),
+        (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
+            state.cursor = state.query.chars().count();
+        }
+        (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            state.cursor = (state.cursor + 1).min(state.query.chars().count());
+        }
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => state.delete_to_start(),
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => state.delete_previous_word(),
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(Some(TuiExit::Quit)),
         (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
             if let Some(exit) = begin_action(state, PendingAction::Copy)? {
@@ -51,10 +74,10 @@ pub(super) fn handle_key(state: &mut AppState, key: KeyEvent) -> Result<Option<T
         (KeyCode::Char('-'), modifiers) if modifiers.contains(KeyModifiers::ALT) => {
             state.scroll_preview(3);
         }
-        (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT) => {
-            if ch != '\n' && ch != '\r' {
-                state.insert_char(ch);
-            }
+        (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT)
+            if ch != '\n' && ch != '\r' =>
+        {
+            state.insert_char(ch);
         }
         _ => {}
     }

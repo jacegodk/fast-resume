@@ -1,3 +1,156 @@
+# [2.12.0](https://github.com/angristan/fast-resume/compare/v2.11.2...v2.12.0) (2026-09-02)
+
+
+### Features
+
+* **nix:** add first-class flake package ([#94](https://github.com/angristan/fast-resume/issues/94)) ([e93b32e](https://github.com/angristan/fast-resume/commit/e93b32ea9724e17b0cc5098ce104369de3c065db))
+
+## [2.11.2](https://github.com/angristan/fast-resume/compare/v2.11.1...v2.11.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **claude:** read session title sidecars ([#92](https://github.com/angristan/fast-resume/issues/92)) ([b71e340](https://github.com/angristan/fast-resume/commit/b71e340ec823d21ac912ea0d4034481189f0c726))
+
+## [2.11.1](https://github.com/angristan/fast-resume/compare/v2.11.0...v2.11.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* **claude:** restore custom session titles ([#90](https://github.com/angristan/fast-resume/issues/90)) ([8785ac3](https://github.com/angristan/fast-resume/commit/8785ac38fbe7ba7df9c2a1e5f091f6cc3aa60e2e))
+
+# [2.11.0](https://github.com/angristan/fast-resume/compare/v2.10.0...v2.11.0) (2026-08-21)
+
+
+### Features
+
+* **tui:** add keyboard help and Emacs editing ([#89](https://github.com/angristan/fast-resume/issues/89)) ([a831fb0](https://github.com/angristan/fast-resume/commit/a831fb0a98467d853cec605ffd0abf1a79332355))
+
+# [2.10.0](https://github.com/angristan/fast-resume/compare/v2.9.4...v2.10.0) (2026-08-15)
+
+
+### Features
+
+* **tui:** add light terminal themes ([93fd8ba](https://github.com/angristan/fast-resume/commit/93fd8ba02d847c4ed52bd967b66c6903b6147f20))
+
+## [2.9.4](https://github.com/angristan/fast-resume/compare/v2.9.3...v2.9.4) (2026-08-09)
+
+
+### Bug Fixes
+
+* **adapters:** index short user prompts ([f9e9a98](https://github.com/angristan/fast-resume/commit/f9e9a9878745c17757f10db98b7bf7d00ba1288f))
+
+## [2.9.3](https://github.com/angristan/fast-resume/compare/v2.9.2...v2.9.3) (2026-08-09)
+
+
+### Bug Fixes
+
+* **codex:** index modern user messages ([ed40a94](https://github.com/angristan/fast-resume/commit/ed40a94ba91e88f517cdd1773899735cb7a0c61e))
+
+## [2.9.2](https://github.com/angristan/fast-resume/compare/v2.9.1...v2.9.2) (2026-08-08)
+
+
+### Bug Fixes
+
+* **config:** honor XDG cache directory ([1fb9488](https://github.com/angristan/fast-resume/commit/1fb94888c64164863b73974431c008ebb5c72b41))
+
+## [2.9.1](https://github.com/angristan/fast-resume/compare/v2.9.0...v2.9.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* **adapters:** make rebuild mtimes match the incremental scan ([938e707](https://github.com/angristan/fast-resume/commit/938e7070633002f12f748ebd05b064bce73e5805))
+* **cli:** tidy flag interactions and let --stats honor filters ([456f0fe](https://github.com/angristan/fast-resume/commit/456f0fe13e669fb47d9f14f21f9dbe7ae9a6250a))
+* **tui:** only act on key press events ([b15b5b0](https://github.com/angristan/fast-resume/commit/b15b5b0c3cb9e9ad7f52cfde1779e6e91b987689))
+
+
+### Performance Improvements
+
+* **adapters:** scope legacy opencode loads and share the known map ([6c4952c](https://github.com/angristan/fast-resume/commit/6c4952c7e0cd2d00f6253e3da1b4588668e0b935))
+* **tui:** cache rendered preview lines ([cb6db3c](https://github.com/angristan/fast-resume/commit/cb6db3c22eb6d0fa2c08ae1f2c8dc20a5a189178))
+
+# [2.9.0](https://github.com/angristan/fast-resume/compare/v2.8.0...v2.9.0) (2026-08-08)
+
+
+### Features
+
+* **packaging:** drop Windows support ([ccbf930](https://github.com/angristan/fast-resume/commit/ccbf93027aeb362ea25293469fe93e379b0cbd3f))
+
+# [2.8.0](https://github.com/angristan/fast-resume/compare/v2.7.1...v2.8.0) (2026-08-08)
+
+
+### Bug Fixes
+
+* **cli:** propagate search errors in list and JSON output ([b447213](https://github.com/angristan/fast-resume/commit/b4472135122e70d5c097c69b4320081eb60b7595))
+* **index:** wipe stale index schemas under the write lock ([dffb54f](https://github.com/angristan/fast-resume/commit/dffb54f77879a0a1fa3f9d0160cbcad9a8796cab))
+* **tui:** restore the terminal when a panic unwinds the TUI ([ceabef8](https://github.com/angristan/fast-resume/commit/ceabef854320521023e0c8523ab0b18e14d90339))
+
+
+### Features
+
+* **cli:** add --no-refresh and announce refresh-lock waits ([647f9d4](https://github.com/angristan/fast-resume/commit/647f9d4cb7cdbabbb39f311bc5c9d5b3a4c04356))
+
+
+### Performance Improvements
+
+* **index:** read session markers from fast fields at launch ([2ac84b0](https://github.com/angristan/fast-resume/commit/2ac84b0881089d9338d815a0cb682830f9b6748a))
+* **index:** reuse one index writer and batch commits per refresh ([cb59aff](https://github.com/angristan/fast-resume/commit/cb59aff0c050a43039f902c1d25fafa44404cfe2))
+
+## [2.7.1](https://github.com/angristan/fast-resume/compare/v2.7.0...v2.7.1) (2026-08-05)
+
+
+### Bug Fixes
+
+* **packaging:** publish local npm tarballs ([254ad2c](https://github.com/angristan/fast-resume/commit/254ad2c453ce9fd5e16ced1c92aeb4c16794c33f))
+
+# [2.7.0](https://github.com/angristan/fast-resume/compare/v2.6.1...v2.7.0) (2026-08-05)
+
+
+### Features
+
+* **packaging:** publish CLI on npm ([9f60e8b](https://github.com/angristan/fast-resume/commit/9f60e8bc7851d4aa59db38d970d3b7aa2d9ad9bb))
+
+## [2.6.1](https://github.com/angristan/fast-resume/compare/v2.6.0...v2.6.1) (2026-08-05)
+
+
+### Performance Improvements
+
+* **vscode:** skip unchanged session JSON parsing ([843ec96](https://github.com/angristan/fast-resume/commit/843ec9670f72b92fcebdd9eda90d152c498fe22e))
+
+# [2.6.0](https://github.com/angristan/fast-resume/compare/v2.5.0...v2.6.0) (2026-08-05)
+
+
+### Bug Fixes
+
+* **index:** serialize concurrent refresh writes ([4a43ada](https://github.com/angristan/fast-resume/commit/4a43ada5862a94b70540d6409ec81845b0b51957))
+* **index:** serialize every incremental refresh ([870f581](https://github.com/angristan/fast-resume/commit/870f5817a437cefcb5e66413cf1d5aa175fb8699))
+
+
+### Features
+
+* **cli:** add paginated JSON output for agents ([f0d1937](https://github.com/angristan/fast-resume/commit/f0d1937c30a8c5a5a3c5d0d816fef8ac1ae9738c))
+
+# [2.5.0](https://github.com/angristan/fast-resume/compare/v2.4.0...v2.5.0) (2026-07-18)
+
+
+### Features
+
+* add Kimi Code session support ([#78](https://github.com/angristan/fast-resume/issues/78)) ([638a229](https://github.com/angristan/fast-resume/commit/638a2299574440e96327f26e2f95c3a42ee4ead5))
+
+# [2.4.0](https://github.com/angristan/fast-resume/compare/v2.3.0...v2.4.0) (2026-07-18)
+
+
+### Features
+
+* add Antigravity, Cursor, and Grok support ([#76](https://github.com/angristan/fast-resume/issues/76)) ([8c70a89](https://github.com/angristan/fast-resume/commit/8c70a899dd53a91e67c6a982822b3ae9686e8173))
+
+# [2.3.0](https://github.com/angristan/fast-resume/compare/v2.2.0...v2.3.0) (2026-07-17)
+
+
+### Features
+
+* **tui:** hide agents without sessions ([#77](https://github.com/angristan/fast-resume/issues/77)) ([4d0a89e](https://github.com/angristan/fast-resume/commit/4d0a89e0888d72170faadc3cece29e64f964d09a))
+
 # [2.2.0](https://github.com/angristan/fast-resume/compare/v2.1.0...v2.2.0) (2026-07-16)
 
 

@@ -32,15 +32,14 @@ impl SearchEngine {
         self.index.total_len().unwrap_or(0)
     }
 
-    pub fn count_matches(
+    pub fn count_result(
         &self,
         query: &str,
         agent_filter: Option<&str>,
         directory_filter: Option<&str>,
-    ) -> usize {
+    ) -> Result<usize> {
         self.index
             .search_count(query, agent_filter, directory_filter)
-            .unwrap_or(0)
     }
 
     pub fn count_for_agent(&self, agent: Option<&str>) -> usize {
@@ -58,7 +57,18 @@ impl SearchEngine {
         directory_filter: Option<&str>,
         limit: usize,
     ) -> Vec<Session> {
-        self.search_result(query, agent_filter, directory_filter, limit)
+        self.search_with_offset(query, agent_filter, directory_filter, 0, limit)
+    }
+
+    pub fn search_with_offset(
+        &self,
+        query: &str,
+        agent_filter: Option<&str>,
+        directory_filter: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Vec<Session> {
+        self.search_result_with_offset(query, agent_filter, directory_filter, offset, limit)
             .unwrap_or_default()
     }
 
@@ -69,8 +79,19 @@ impl SearchEngine {
         directory_filter: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Session>> {
+        self.search_result_with_offset(query, agent_filter, directory_filter, 0, limit)
+    }
+
+    pub fn search_result_with_offset(
+        &self,
+        query: &str,
+        agent_filter: Option<&str>,
+        directory_filter: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<Session>> {
         self.index
-            .search(query, agent_filter, directory_filter, limit)
+            .search_with_offset(query, agent_filter, directory_filter, offset, limit)
             .map(|hits| hits.into_iter().map(|hit| hit.session).collect())
     }
 }
@@ -253,10 +274,38 @@ mod tests {
             vec!["claude-recent", "codex-recent", "opencode-recent"]
         );
         assert_eq!(result_ids(&engine, "date:>3d"), vec!["vibe-old"]);
-        assert_eq!(result_ids(&engine, "date:!today"), vec!["vibe-old"]);
         assert_eq!(
             result_ids(&engine, "agent:claude,codex dir:web date:<5h"),
             vec!["claude-recent", "codex-recent"]
         );
+    }
+
+    #[test]
+    fn excludes_sessions_from_before_today() {
+        let temp = tempdir().unwrap();
+        let index = SessionIndex::open(temp.path().join("index")).unwrap();
+        index
+            .rebuild(vec![
+                session_at(
+                    "today",
+                    "codex",
+                    "Today",
+                    "/work/today",
+                    "current",
+                    ChronoDuration::zero(),
+                ),
+                session_at(
+                    "before-today",
+                    "vibe",
+                    "Before today",
+                    "/work/archive",
+                    "archive",
+                    ChronoDuration::days(2),
+                ),
+            ])
+            .unwrap();
+        let engine = SearchEngine::from_index(index);
+
+        assert_eq!(result_ids(&engine, "date:!today"), vec!["before-today"]);
     }
 }

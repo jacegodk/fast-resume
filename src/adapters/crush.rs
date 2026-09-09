@@ -10,8 +10,8 @@ use crate::config;
 use crate::model::{RawAdapterStats, Session, truncate_title};
 
 use super::shared::{
-    deleted_ids_for_agent, failed_incremental_scan, session_needs_update, string_at,
-    timestamp_from_ms, timestamp_from_seconds,
+    build_resume_command, deleted_ids_for_agent, failed_incremental_scan, session_needs_update,
+    string_at, timestamp_from_ms, timestamp_from_seconds,
 };
 use super::{Adapter, IncrementalScan, KnownSessions, SessionCallback};
 
@@ -54,16 +54,11 @@ impl Adapter for CrushAdapter {
         known: &KnownSessions,
         on_session: &mut SessionCallback<'_>,
     ) -> IncrementalScan {
-        self.find_sessions_incremental_with(known, |session| on_session(session))
+        self.find_sessions_incremental_with(known, on_session)
     }
 
     fn resume_command(&self, session: &Session, yolo: bool) -> Vec<String> {
-        let mut cmd = vec!["crush".to_string()];
-        if yolo {
-            cmd.push("--yolo".to_string());
-        }
-        cmd.extend(["--session".to_string(), session.id.clone()]);
-        cmd
+        build_resume_command("crush", &["--yolo"], yolo, &["--session"], &session.id)
     }
 
     fn raw_stats(&self) -> RawAdapterStats {
@@ -209,7 +204,7 @@ fn load_crush_db_checked(
             if text.is_empty() {
                 continue;
             }
-            if role == "user" && first_user.is_empty() && text.chars().count() > 5 {
+            if role == "user" && first_user.is_empty() {
                 first_user = text.clone();
             }
             let prefix = if role == "user" { "» " } else { "  " };
@@ -414,6 +409,69 @@ mod tests {
         assert!(text.contains("hello"));
         assert!(text.contains("[calling edit]"));
         assert!(text.contains("[edit]: ok"));
+    }
+
+    #[test]
+    fn indexes_session_with_short_user_prompt() {
+        let temp = tempdir().unwrap();
+        let projects_file = temp.path().join("projects.json");
+        let data_dir = temp.path().join("project-data");
+        fs::create_dir(&data_dir).unwrap();
+        let db_path = data_dir.join("crush.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                message_count INTEGER,
+                updated_at INTEGER,
+                created_at INTEGER
+            );
+            CREATE TABLE messages (
+                session_id TEXT,
+                role TEXT,
+                parts TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
+            );
+            "#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title, message_count, updated_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("crush-short", "", 1_i64, 1_720_000_000_i64, 1_720_000_000_i64),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (session_id, role, parts, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "crush-short",
+                "user",
+                json!([{"type": "text", "data": {"text": "Hi"}}]).to_string(),
+                1_720_000_000_i64,
+                1_720_000_000_i64,
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &projects_file,
+            json!({
+                "projects": [{
+                    "path": "/work/crush",
+                    "data_dir": data_dir
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let sessions = CrushAdapter { projects_file }.find_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "crush-short");
+        assert_eq!(sessions[0].title, "Hi");
+        assert_eq!(sessions[0].content, "» Hi");
     }
 
     #[test]

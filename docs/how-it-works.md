@@ -10,7 +10,7 @@ Agent stores ──► adapters ──► normalized sessions ──► Tantivy 
 Terminal ◄──── resume handoff ◄──── TUI/search ◄────────┘
 ```
 
-The TUI opens against the current index immediately. A background refresh scans for changes, commits updates in batches, reloads the search reader, and preserves the current selection where possible.
+The TUI opens against the current index immediately. A background refresh scans for changes, commits batched updates about once per second, reloads the search reader, and preserves the current selection where possible.
 
 ## Session adapters
 
@@ -18,16 +18,20 @@ Each adapter maps an agent-specific format into the shared `Session` model.
 
 | Agent | Format | Parsing strategy |
 | --- | --- | --- |
-| Claude Code | `~/.claude/projects/<project>/*.jsonl` | Reads user and assistant entries and skips agent subprocess files |
+| Antigravity CLI | `~/.gemini/antigravity-cli/conversations/<id>.db` or `brain/<id>/.system_generated/logs/*.jsonl` | Reads native protobuf-backed SQLite conversations with WAL support, falls back to generated transcripts, and excludes tool results |
+| Claude Code | `~/.claude/projects/<project>/*.jsonl`, title sidecars, and `sessions-index.json` | Reads user and assistant entries, prefers explicit custom titles, and skips agent subprocess files |
 | Codex | `~/.codex/sessions/**/*.jsonl` | Reads `session_meta`, `response_item`, and `event_msg` records |
 | Copilot CLI | `~/.copilot/session-state/**/*.jsonl` | Reads session identity, user messages, assistant messages, and titles |
 | Copilot in VS Code | VS Code chat-session JSON | Reads request text, response values, and workspace references |
 | Crush | Per-project SQLite database | Queries sessions and messages and parses JSON message parts |
+| Cursor CLI | `~/.cursor/chats/*/*/store.db` | Reads session metadata and user/assistant records from Cursor's local SQLite stores |
+| Grok Build | `$GROK_HOME/sessions/<workspace>/<id>/{summary.json,updates.jsonl}` | Reads session metadata, combines streamed ACP message chunks, and applies rewind markers |
+| Kimi Code | `$KIMI_CODE_HOME/session_index.jsonl`, session `state.json`, and `agents/main/wire.jsonl` | Reads working directories, session metadata, user messages, and streamed assistant text |
 | OpenCode | SQLite or legacy split JSON | Joins sessions, messages, and text parts |
 | Pi | `~/.pi/agent/sessions/**/*.jsonl` | Reads session headers, user and assistant messages, names, visible custom messages, and summaries |
 | Vibe | `meta.json` and `messages.jsonl` | Reads metadata, role-based content, and auto-approve state |
 
-Pi discovery respects `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR`, and the global `settings.json` `sessionDir`. Project-local `sessionDir` overrides outside that configured store cannot be discovered automatically.
+Grok discovery respects `GROK_HOME`. Kimi Code discovery uses `$KIMI_CODE_HOME/sessions/`, defaulting to `~/.kimi-code/sessions/`. Pi discovery respects `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR`, and the global `settings.json` `sessionDir`. Project-local `sessionDir` overrides outside that configured store cannot be discovered automatically.
 
 The normalized model contains:
 
@@ -49,7 +53,7 @@ The index focuses on conversation text: prompts and assistant responses. Most la
 
 ## Indexing and refresh
 
-The persistent index lives at:
+The persistent index follows the XDG Base Directory specification. It lives at `$XDG_CACHE_HOME/fast-resume/tantivy_index` when `XDG_CACHE_HOME` is an absolute path. Otherwise, it lives at:
 
 ```text
 ~/.cache/fast-resume/tantivy_index
@@ -57,14 +61,18 @@ The persistent index lives at:
 
 On an incremental refresh, fast-resume:
 
-1. Loads indexed session IDs and refresh markers.
-2. Scans each adapter concurrently.
-3. Parses new or changed sessions.
-4. Retains old documents when a source is temporarily incomplete or malformed.
-5. Infers deletions only when the relevant scan is complete.
-6. Commits changes in batches and reports progress to the TUI.
+1. Acquires a cross-process refresh lock.
+2. Reloads the latest committed index state.
+3. Loads indexed session IDs and refresh markers.
+4. Scans each adapter concurrently.
+5. Parses new or changed sessions.
+6. Retains old documents when a source is temporarily incomplete or malformed.
+7. Infers deletions only when the relevant scan is complete.
+8. Applies changes through one index writer and reports progress to the TUI. A TUI refresh commits about once per second so new results appear while it runs; non-interactive refreshes commit once at the end.
 
-File-backed adapters normally use modification times. Database-backed adapters include their relevant message and part activity; Crush also fingerprints the final indexed projection so same-second edits are detected.
+Only one process refreshes the index at a time. Concurrent `fr --list` and `fr --json` calls wait for exclusive access, reload the latest committed index, and then run their own incremental refresh. This keeps every invocation current without allowing refresh batches to interleave. Cold initialization uses the same lock, so its source scan also runs serially. A call that has to wait prints a notice on stderr; `--no-refresh` skips the refresh entirely and serves the last committed index immediately.
+
+File-backed adapters normally use modification times. Antigravity and Cursor include SQLite WAL modification times, while database-backed adapters include their relevant message and part activity; Crush also fingerprints the final indexed projection so same-second edits are detected.
 
 JSONL sources distinguish three states:
 
@@ -112,16 +120,20 @@ Each adapter returns the command needed to continue its session:
 
 | Agent | Resume command | Yolo variant |
 | --- | --- | --- |
+| Antigravity CLI | `agy --conversation <id>` | `agy --dangerously-skip-permissions --conversation <id>` |
 | Claude | `claude --resume <id>` | `claude --dangerously-skip-permissions --resume <id>` |
 | Codex | `codex resume <id>` | `codex --dangerously-bypass-approvals-and-sandbox resume <id>` |
 | Copilot CLI | `copilot --resume <id>` | `copilot --yolo --resume <id>` |
 | Copilot in VS Code | `code <directory>` | No change |
+| Crush | `crush --session <id>` | `crush --yolo --session <id>` |
+| Cursor CLI | `agent --resume <id>` | `agent --yolo --resume <id>` |
+| Grok Build | `grok --resume <id>` | `grok --always-approve --resume <id>` |
+| Kimi Code | `kimi --session <id>` | `kimi --yolo --session <id>` |
 | OpenCode | `opencode <directory> --session <id>` | No change |
 | Pi | `pi --session <id>` | No change |
 | Vibe | `vibe --resume <id>` | `vibe --agent auto-approve --resume <id>` |
-| Crush | `crush --session <id>` | `crush --yolo --session <id>` |
 
-On Unix, `exec()` replaces fast-resume with the agent process. On Windows, fast-resume waits for the child and exits with the same status. In both cases the agent receives the session's working directory.
+`exec()` replaces fast-resume with the agent process, and the agent receives the session's working directory.
 
 ## Performance
 
@@ -129,8 +141,9 @@ fast-resume avoids a full parse on ordinary launches:
 
 - Adapters scan concurrently.
 - The current index is searchable before refresh finishes.
+- Launch reads indexed session markers from columnar fast fields, not from stored conversation content.
 - Unchanged sessions are not re-parsed.
-- Changed sessions are committed in batches.
+- Changed sessions flow through one index writer with periodic commits.
 - Search and index reloads stay off the input path.
 - Obsolete search generations are discarded.
 

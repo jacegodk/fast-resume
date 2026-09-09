@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -21,6 +23,18 @@ fn assert_success(output: Output) -> (String, String) {
         output.status.success(),
         "fr failed with {:?}\nstdout:\n{}\nstderr:\n{}",
         output.status,
+        stdout,
+        stderr
+    );
+    (stdout, stderr)
+}
+
+fn assert_failure(output: Output) -> (String, String) {
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !output.status.success(),
+        "fr unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
         stdout,
         stderr
     );
@@ -63,6 +77,89 @@ fn write_pi_session(home: &Path, id: &str, directory: &str, prompt: &str) -> Pat
     ];
     write_jsonl(&session_file, &rows);
     session_file
+}
+
+fn write_new_agent_sessions(home: &Path) {
+    let antigravity_id = "52d82992-7695-4d38-8d02-9747eecba839";
+    let antigravity = home
+        .join(".gemini/antigravity-cli/brain")
+        .join(antigravity_id)
+        .join(".system_generated/logs");
+    fs::create_dir_all(&antigravity).unwrap();
+    write_jsonl(
+        &antigravity.join("transcript.jsonl"),
+        &[
+            json!({"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>Antigravity binary coverage</USER_REQUEST>"}),
+        ],
+    );
+
+    let grok_id = "019edf9c-0000-7000-8000-000000000001";
+    let grok = home.join(".grok/sessions/%2Frepo%2Fgrok").join(grok_id);
+    fs::create_dir_all(&grok).unwrap();
+    fs::write(
+        grok.join("summary.json"),
+        json!({"info":{"id":grok_id,"cwd":"/repo/grok"},"created_at":"2026-07-17T10:00:00Z"})
+            .to_string(),
+    )
+    .unwrap();
+    write_jsonl(
+        &grok.join("updates.jsonl"),
+        &[
+            json!({"params":{"update":{"sessionUpdate":"user_message_chunk","content":{"text":"Grok binary coverage"}}}}),
+        ],
+    );
+
+    let cursor = home.join(".cursor/chats/%2Frepo%2Fcursor/cursor123");
+    fs::create_dir_all(&cursor).unwrap();
+    let connection = rusqlite::Connection::open(cursor.join("store.db")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE meta (key TEXT, value BLOB); CREATE TABLE blobs (key TEXT, value BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO blobs (key, value) VALUES (?1, ?2)",
+            (
+                "u1",
+                json!({"role":"user","content":"Cursor binary coverage"}).to_string(),
+            ),
+        )
+        .unwrap();
+}
+
+fn write_kimi_session(home: &Path, id: &str, directory: &str, prompt: &str) -> PathBuf {
+    let session_dir = home.join(".kimi-code/sessions/--repo-kimi--").join(id);
+    let wire_dir = session_dir.join("agents/main");
+    fs::create_dir_all(&wire_dir).unwrap();
+    fs::write(
+        session_dir.join("state.json"),
+        json!({
+            "id": id,
+            "title": prompt,
+            "createdAt": 1784110800000i64,
+            "updatedAt": 1784110801000i64
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let wire_file = wire_dir.join("wire.jsonl");
+    write_jsonl(
+        &wire_file,
+        &[
+            json!({"type": "metadata", "protocol_version": "1.4", "created_at": 1784110800000i64}),
+            json!({"type": "context.append_message", "time": 1784110801000i64, "message": {"role": "user", "content": prompt, "origin": {"kind": "user"}}}),
+        ],
+    );
+    write_jsonl(
+        &home.join(".kimi-code/session_index.jsonl"),
+        &[json!({
+            "sessionId": id,
+            "sessionDir": session_dir.to_string_lossy(),
+            "workDir": directory
+        })],
+    );
+    wire_file
 }
 
 fn write_jsonl(path: &Path, rows: &[Value]) {
@@ -110,6 +207,68 @@ fn list_stats_and_rebuild_work_through_the_binary() {
     assert!(rebuild_stdout.contains("Review binary CLI coverage"));
     assert!(rebuild_stdout.contains("Showing 1 of 1 sessions"));
     assert!(rebuild_stderr.contains("Indexed 1 sessions"));
+}
+
+#[test]
+fn json_uses_claude_custom_title() {
+    let temp = TempDir::new().unwrap();
+    let session_file = write_claude_session(
+        temp.path(),
+        "claude-renamed",
+        "/repo/claude",
+        "Original Claude prompt",
+    );
+    let mut transcript = fs::read_to_string(&session_file).unwrap();
+    transcript.push('\n');
+    transcript.push_str(
+        &json!({
+            "type": "custom-title",
+            "customTitle": "Named Claude session",
+            "sessionId": "claude-renamed"
+        })
+        .to_string(),
+    );
+    fs::write(session_file, transcript).unwrap();
+
+    let (stdout, stderr) = assert_success(run_fr(
+        temp.path(),
+        &["--json", "--agent", "claude", "--all"],
+    ));
+    assert!(stderr.is_empty());
+    let output: Value = serde_json::from_str(&stdout).unwrap();
+    let sessions = output["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["id"], "claude-renamed");
+    assert_eq!(sessions[0]["title"], "Named Claude session");
+}
+
+#[test]
+fn json_uses_claude_sidecar_custom_title() {
+    let temp = TempDir::new().unwrap();
+    write_claude_session(
+        temp.path(),
+        "claude-sidecar",
+        "/repo/claude",
+        "Original Claude prompt",
+    );
+    let sidecar_dir = temp.path().join(".claude/projects/project/claude-sidecar");
+    fs::create_dir_all(&sidecar_dir).unwrap();
+    fs::write(
+        sidecar_dir.join("custom-title.json"),
+        json!({"customTitle": "Sidecar Claude session"}).to_string(),
+    )
+    .unwrap();
+
+    let (stdout, stderr) = assert_success(run_fr(
+        temp.path(),
+        &["--json", "--agent", "claude", "--all"],
+    ));
+    assert!(stderr.is_empty());
+    let output: Value = serde_json::from_str(&stdout).unwrap();
+    let sessions = output["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["id"], "claude-sidecar");
+    assert_eq!(sessions[0]["title"], "Sidecar Claude session");
 }
 
 #[test]
@@ -171,12 +330,19 @@ fn list_footer_counts_filtered_matches() {
         "/repo/pi",
         "Pi adapter integration coverage",
     );
+    write_kimi_session(
+        temp.path(),
+        "kimi123",
+        "/repo/kimi",
+        "Kimi adapter integration coverage",
+    );
 
     let (query_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "Needle"]));
     assert!(query_stdout.contains("backend123"));
     assert!(!query_stdout.contains("frontend123"));
     assert!(!query_stdout.contains("claude123"));
     assert!(!query_stdout.contains("pi123"));
+    assert!(!query_stdout.contains("kimi123"));
     assert!(query_stdout.contains("Showing 1 of 1 sessions"));
 
     let (directory_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "-d", "backend"]));
@@ -184,6 +350,7 @@ fn list_footer_counts_filtered_matches() {
     assert!(directory_stdout.contains("claude123"));
     assert!(!directory_stdout.contains("frontend123"));
     assert!(!directory_stdout.contains("pi123"));
+    assert!(!directory_stdout.contains("kimi123"));
     assert!(directory_stdout.contains("Showing 2 of 2 sessions"));
 
     let (agent_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "-a", "claude"]));
@@ -191,11 +358,315 @@ fn list_footer_counts_filtered_matches() {
     assert!(!agent_stdout.contains("backend123"));
     assert!(!agent_stdout.contains("frontend123"));
     assert!(!agent_stdout.contains("pi123"));
+    assert!(!agent_stdout.contains("kimi123"));
     assert!(agent_stdout.contains("Showing 1 of 1 sessions"));
 
     let (pi_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "agent:pi"]));
     assert!(pi_stdout.contains("pi123"));
     assert!(pi_stdout.contains("Pi adapter integration coverage"));
     assert!(!pi_stdout.contains("backend123"));
+    assert!(!pi_stdout.contains("kimi123"));
     assert!(pi_stdout.contains("Showing 1 of 1 sessions"));
+
+    let (kimi_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "agent:kimi"]));
+    assert!(kimi_stdout.contains("kimi123"));
+    assert!(kimi_stdout.contains("Kimi adapter integration coverage"));
+    assert!(!kimi_stdout.contains("pi123"));
+    assert!(kimi_stdout.contains("Showing 1 of 1 sessions"));
+}
+
+#[test]
+fn lists_antigravity_cursor_and_grok_sessions() {
+    let temp = TempDir::new().unwrap();
+    write_new_agent_sessions(temp.path());
+
+    let (stdout, stderr) = assert_success(run_fr(temp.path(), &["--list"]));
+
+    assert!(stderr.is_empty());
+    for expected in [
+        "antigravity",
+        "Antigravity binary coverage",
+        "cursor",
+        "Cursor binary coverage",
+        "grok",
+        "Grok binary coverage",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing {expected} in:\n{stdout}"
+        );
+    }
+    assert!(stdout.contains("Showing 3 of 3 sessions"));
+}
+
+#[test]
+fn json_output_is_stable_and_paginated() {
+    let temp = TempDir::new().unwrap();
+    for (id, prompt) in [
+        ("json-a", "JSON pagination alpha"),
+        ("json-b", "JSON pagination beta"),
+        ("json-c", "JSON pagination gamma"),
+    ] {
+        write_codex_session(temp.path(), id, "/repo/json", prompt);
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let (first_stdout, first_stderr) = assert_success(run_fr(
+        temp.path(),
+        &["--json", "--limit", "2", "JSON pagination"],
+    ));
+    assert!(first_stderr.is_empty());
+    let first: Value = serde_json::from_str(&first_stdout).unwrap();
+    assert_eq!(first["schema_version"], 1);
+    assert_eq!(first["meta"]["state"], "more");
+    assert_eq!(first["meta"]["total"], 3);
+    assert_eq!(first["meta"]["offset"], 0);
+    assert_eq!(first["meta"]["limit"], 2);
+    assert_eq!(first["meta"]["returned"], 2);
+    assert_eq!(first["meta"]["next_offset"], 2);
+    let first_sessions = first["sessions"].as_array().unwrap();
+    assert_eq!(first_sessions.len(), 2);
+    for session in first_sessions {
+        assert_eq!(session["agent"], "codex");
+        assert_eq!(session["directory"], "/repo/json");
+        assert_eq!(session["message_count"], 1);
+        assert!(session["timestamp"].as_str().is_some());
+        assert_eq!(session["resume_command"][0], "codex");
+        assert_eq!(session["resume_command"][1], "resume");
+        assert!(session.get("content").is_none());
+        assert!(session.get("mtime").is_none());
+        assert!(session.get("yolo").is_none());
+    }
+
+    let (second_stdout, second_stderr) = assert_success(run_fr(
+        temp.path(),
+        &["--json", "--limit", "2", "--offset", "2", "JSON pagination"],
+    ));
+    assert!(second_stderr.is_empty());
+    let second: Value = serde_json::from_str(&second_stdout).unwrap();
+    assert_eq!(second["meta"]["state"], "complete");
+    assert_eq!(second["meta"]["returned"], 1);
+    assert!(second["meta"]["next_offset"].is_null());
+
+    let mut ids: Vec<_> = first_sessions
+        .iter()
+        .chain(second["sessions"].as_array().unwrap())
+        .map(|session| session["id"].as_str().unwrap())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids, vec!["json-a", "json-b", "json-c"]);
+
+    let (past_stdout, _) = assert_success(run_fr(
+        temp.path(),
+        &["--json", "--offset", "99", "JSON pagination"],
+    ));
+    let past: Value = serde_json::from_str(&past_stdout).unwrap();
+    assert_eq!(past["meta"]["state"], "past_end");
+    assert_eq!(past["meta"]["returned"], 0);
+
+    let (all_stdout, _) = assert_success(run_fr(
+        temp.path(),
+        &["--json", "--all", "--offset", "1", "JSON pagination"],
+    ));
+    let all: Value = serde_json::from_str(&all_stdout).unwrap();
+    assert_eq!(all["meta"]["state"], "complete");
+    assert_eq!(all["meta"]["returned"], 2);
+}
+
+#[test]
+fn xdg_cache_home_controls_index_location() {
+    let temp = TempDir::new().unwrap();
+    let xdg_cache_home = temp.path().join("custom-cache");
+    write_codex_session(temp.path(), "xdg123", "/repo/backend", "XDG cache");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fr"))
+        .arg("--list")
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("XDG_CACHE_HOME", &xdg_cache_home)
+        .output()
+        .unwrap();
+    assert_success(output);
+
+    assert!(
+        xdg_cache_home
+            .join("fast-resume/tantivy_index/meta.json")
+            .is_file()
+    );
+    assert!(!temp.path().join(".cache/fast-resume").exists());
+}
+
+#[test]
+fn relative_xdg_cache_home_is_ignored() {
+    let temp = TempDir::new().unwrap();
+    write_codex_session(
+        temp.path(),
+        "xdg-relative",
+        "/repo/backend",
+        "Invalid XDG cache",
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fr"))
+        .arg("--list")
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("XDG_CACHE_HOME", "relative-cache")
+        .output()
+        .unwrap();
+    assert_success(output);
+
+    assert!(
+        temp.path()
+            .join(".cache/fast-resume/tantivy_index/meta.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn broken_index_fails_loudly_instead_of_reporting_zero_sessions() {
+    let temp = TempDir::new().unwrap();
+    write_codex_session(temp.path(), "broken123", "/repo/backend", "Broken index");
+    assert_success(run_fr(temp.path(), &["--list"]));
+
+    let meta = temp
+        .path()
+        .join(".cache/fast-resume/tantivy_index/meta.json");
+    fs::write(meta, "not json").unwrap();
+
+    let (stdout, stderr) = assert_failure(run_fr(temp.path(), &["--json"]));
+    assert!(stdout.is_empty());
+    assert!(!stderr.is_empty());
+}
+
+#[test]
+fn flag_polish_covers_alias_conflicts_and_stats_filters() {
+    let temp = TempDir::new().unwrap();
+    write_codex_session(
+        temp.path(),
+        "codex123",
+        "/repo/backend",
+        "Codex stats session",
+    );
+    write_claude_session(
+        temp.path(),
+        "claude123",
+        "/repo/frontend",
+        "Claude stats session prompt",
+    );
+
+    let (alias_stdout, _) = assert_success(run_fr(temp.path(), &["--no-tui"]));
+    assert!(alias_stdout.contains("codex123"));
+
+    let (stats_stdout, _) = assert_success(run_fr(temp.path(), &["--stats", "-a", "codex"]));
+    assert!(stats_stdout.contains("Total sessions          1"));
+    assert!(stats_stdout.contains("codex"));
+    assert!(!stats_stdout.contains("claude"));
+
+    let (dir_stats_stdout, _) = assert_success(run_fr(temp.path(), &["--stats", "-d", "frontend"]));
+    assert!(dir_stats_stdout.contains("Total sessions          1"));
+
+    let (context_stdout, _) =
+        assert_success(run_fr(temp.path(), &["--agent-context", "--limit", "5"]));
+    assert!(context_stdout.starts_with("---\nname: fast-resume\n"));
+
+    let (stdout, stderr) = assert_failure(run_fr(temp.path(), &["--images", "--no-images"]));
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("cannot be used with"));
+}
+
+#[test]
+fn incremental_refresh_after_rebuild_reparses_nothing() {
+    let temp = TempDir::new().unwrap();
+    write_codex_session(
+        temp.path(),
+        "parity-codex",
+        "/repo/backend",
+        "Codex parity session",
+    );
+    write_claude_session(
+        temp.path(),
+        "parity-claude",
+        "/repo/backend",
+        "Claude parity session prompt",
+    );
+    assert_success(run_fr(temp.path(), &["--rebuild", "--list"]));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_fr"))
+        .arg("--list")
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("FAST_RESUME_TRACE_REFRESH", "1")
+        .output()
+        .unwrap();
+    let (_, stderr) = assert_success(output);
+
+    for agent in ["codex", "claude"] {
+        let line = stderr
+            .lines()
+            .find(|line| line.starts_with(&format!("refresh {agent}:")))
+            .unwrap_or_else(|| panic!("missing trace for {agent}:\n{stderr}"));
+        assert!(
+            line.contains("changed=0") && line.contains("deleted=0"),
+            "rebuild mtimes were not accepted by the incremental scan: {line}"
+        );
+    }
+}
+
+#[test]
+fn no_refresh_serves_the_existing_index_without_scanning() {
+    let temp = TempDir::new().unwrap();
+    write_codex_session(temp.path(), "seen123", "/repo/backend", "Seen session");
+
+    let (before_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "--no-refresh"]));
+    assert!(before_stdout.contains("No sessions found."));
+
+    assert_success(run_fr(temp.path(), &["--list"]));
+    write_codex_session(temp.path(), "unseen123", "/repo/backend", "Unseen session");
+
+    let (stdout, stderr) = assert_success(run_fr(temp.path(), &["--json", "--no-refresh"]));
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("seen123"));
+    assert!(!stdout.contains("unseen123"));
+
+    let (stdout, stderr) = assert_failure(run_fr(temp.path(), &["--no-refresh"]));
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("--no-refresh"));
+}
+
+#[test]
+fn agent_context_exposes_the_portable_skill() {
+    let temp = TempDir::new().unwrap();
+
+    let (stdout, stderr) = assert_success(run_fr(temp.path(), &["--agent-context"]));
+
+    assert!(stderr.is_empty());
+    assert!(stdout.starts_with("---\nname: fast-resume\n"));
+    assert!(stdout.contains("fr --json --limit 10"));
+    assert!(stdout.contains("meta.next_offset"));
+}
+
+#[test]
+fn json_empty_results_and_invalid_pagination_are_explicit() {
+    let temp = TempDir::new().unwrap();
+
+    let (empty_stdout, empty_stderr) =
+        assert_success(run_fr(temp.path(), &["--json", "no-such-session"]));
+    assert!(empty_stderr.is_empty());
+    let empty: Value = serde_json::from_str(&empty_stdout).unwrap();
+    assert_eq!(empty["sessions"], json!([]));
+    assert_eq!(empty["meta"]["state"], "complete");
+    assert_eq!(empty["meta"]["total"], 0);
+    assert_eq!(empty["meta"]["returned"], 0);
+
+    for args in [
+        vec!["--json", "--limit", "0"],
+        vec!["--json", "--limit", "invalid"],
+        vec!["--json", "--all", "--limit", "2"],
+        vec!["--limit", "2"],
+    ] {
+        let (stdout, stderr) = assert_failure(run_fr(temp.path(), &args));
+        assert!(stdout.is_empty());
+        assert!(!stderr.is_empty());
+    }
 }

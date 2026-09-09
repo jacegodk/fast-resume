@@ -21,7 +21,7 @@ Coding agents can resume previous sessions, but searching those sessions is ofte
 
 ## Supported agents
 
-Claude Code, Codex, Copilot CLI, Copilot in VS Code, Crush, OpenCode, Pi, and Vibe. See [how it works](docs/how-it-works.md#session-adapters) for storage formats and resume behavior.
+Antigravity CLI, Claude Code, Codex, Copilot CLI, Copilot in VS Code, Crush, Cursor CLI, Grok Build, Kimi Code, OpenCode, Pi, and Vibe. See [how it works](docs/how-it-works.md#session-adapters) for storage formats and resume behavior.
 
 ## Install
 
@@ -32,13 +32,21 @@ brew tap angristan/tap
 brew install fast-resume
 ```
 
-You can also install a binary wheel with `uv`:
+Nix users can run directly from the source package:
 
 ```bash
+nix run github:angristan/fast-resume
+```
+
+You can also install with npm or a binary wheel with `uv`:
+
+```bash
+npm install --global fast-resume
+# or
 uv tool install fast-resume
 ```
 
-See the [installation guide](docs/installation.md) for `uvx`, Cargo, supported platforms, and terminal recommendations.
+See the [installation guide](docs/installation.md) for Nix, npm, `uvx`, Cargo, supported platforms, and terminal recommendations.
 
 ## Quick start
 
@@ -60,6 +68,17 @@ fr --rebuild
 
 Inside the TUI, use the arrow keys to select a session and press `Enter` to resume it. `Tab` completes filters or cycles agents, `Ctrl+P` toggles the preview, and `Ctrl+Y` copies the resume command.
 
+## Agent usage
+
+Coding agents can use the stable JSON output instead of parsing the human table:
+
+```bash
+fr --json --limit 10 "dir:backend authentication bug"
+fr --json --limit 10 --offset 10 "dir:backend authentication bug"
+```
+
+Run `fr --agent-context` to print the bundled [Agent Skill](skills/fast-resume/SKILL.md) with safe search, pagination, and resume guidance.
+
 ## Documentation
 
 - [Installation](docs/installation.md) — packages, platforms, terminals, and upgrades
@@ -69,12 +88,12 @@ Inside the TUI, use the arrow keys to select a session and press `Enter` to resu
 
 ## Configuration
 
-No configuration is required. The Tantivy index lives at `~/.cache/fast-resume/tantivy_index` and is rebuilt automatically when its schema changes.
+No configuration is required. The Tantivy index follows the XDG Base Directory specification. It lives at `$XDG_CACHE_HOME/fast-resume/tantivy_index` when `XDG_CACHE_HOME` is an absolute path, or at `~/.cache/fast-resume/tantivy_index` by default. It is rebuilt automatically when its schema changes.
 
 To reset it manually:
 
 ```bash
-rm -rf ~/.cache/fast-resume
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/fast-resume"
 fr --rebuild
 ```
 
