@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -10,9 +10,9 @@ use crate::config;
 use crate::model::{RawAdapterStats, Session, file_mtime_seconds, file_timestamp, truncate_title};
 
 use super::shared::{
-    IncrementalParse, codex_session_id_from_path, content_texts, deleted_ids_for_agent,
-    failed_incremental_scan, fallback_session_id, incremental_parse_jsonl, parse_timestamp_seconds,
-    raw_stats_for_tree, session_needs_update, string_at,
+    SessionFileScan, build_resume_command, codex_session_id_from_path, content_texts,
+    fallback_session_id, incremental_parse_jsonl, incremental_scan, parse_timestamp_seconds,
+    raw_stats_for_tree, string_at,
 };
 use super::{Adapter, IncrementalScan, KnownSessions, SessionCallback};
 
@@ -32,6 +32,21 @@ impl Default for CodexAdapter {
 }
 
 impl CodexAdapter {
+    fn incremental(
+        &self,
+        known: &KnownSessions,
+        on_session: Option<&mut SessionCallback<'_>>,
+    ) -> IncrementalScan {
+        let thread_names = self.load_thread_names();
+        incremental_scan(
+            self.name(),
+            known,
+            self.scan_session_files(),
+            |path| incremental_parse_jsonl(path, || self.parse_session(path, &thread_names)),
+            on_session,
+        )
+    }
+
     #[allow(dead_code)]
     pub fn new(sessions_dir: PathBuf, session_index_file: PathBuf) -> Self {
         Self {
@@ -50,7 +65,7 @@ impl CodexAdapter {
         let mut directory = String::new();
         let mut messages = Vec::new();
         let mut user_prompts = Vec::new();
-        let mut turns = 0usize;
+        let mut response_user_prompts = Vec::new();
         let mut yolo = false;
 
         for line in BufReader::new(file).lines().map_while(Result::ok) {
@@ -88,9 +103,13 @@ impl CodexAdapter {
                         let role_prefix = if role == "user" { "» " } else { "  " };
                         if let Some(content) = payload.get("content") {
                             for text in content_texts(content) {
-                                if !text.trim_start().starts_with("<environment_context>") {
-                                    messages.push(format!("{role_prefix}{text}"));
+                                if text.trim_start().starts_with("<environment_context>") {
+                                    continue;
                                 }
+                                if role == "user" && string_at(payload, &["type"]) == "message" {
+                                    response_user_prompts.push(text.clone());
+                                }
+                                messages.push(format!("{role_prefix}{text}"));
                             }
                         }
                     }
@@ -101,7 +120,6 @@ impl CodexAdapter {
                         if !message.is_empty() {
                             messages.push(format!("» {message}"));
                             user_prompts.push(message);
-                            turns += 1;
                         }
                     }
                     "agent_reasoning" => {
@@ -120,8 +138,12 @@ impl CodexAdapter {
             session_id = fallback_session_id(path);
         }
         if user_prompts.is_empty() {
+            user_prompts = response_user_prompts;
+        }
+        if user_prompts.is_empty() {
             return None;
         }
+        let turns = user_prompts.len();
 
         let named = thread_names.contains_key(&session_id);
         let title_source = thread_names
@@ -198,7 +220,7 @@ impl CodexAdapter {
         fallback_session_id(path)
     }
 
-    fn scan_session_files(&self) -> Option<(HashMap<String, (PathBuf, f64)>, bool)> {
+    fn scan_session_files(&self) -> Option<SessionFileScan> {
         let mut current_files = HashMap::new();
         let mut complete = true;
         if !self.sessions_dir.exists() {
@@ -239,53 +261,22 @@ impl Adapter for CodexAdapter {
     }
 
     fn find_sessions(&self) -> Vec<Session> {
-        if !self.sessions_dir.exists() {
+        let Some((current_files, _)) = self.scan_session_files() else {
             return Vec::new();
-        }
+        };
         let thread_names = self.load_thread_names();
-        WalkDir::new(&self.sessions_dir)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
-            .filter_map(|entry| self.parse_session(entry.path(), &thread_names))
+        current_files
+            .into_values()
+            .filter_map(|(path, mtime)| {
+                let mut session = self.parse_session(&path, &thread_names)?;
+                session.mtime = mtime;
+                Some(session)
+            })
             .collect()
     }
 
     fn find_sessions_incremental(&self, known: &KnownSessions) -> IncrementalScan {
-        let thread_names = self.load_thread_names();
-        let Some((current_files, complete)) = self.scan_session_files() else {
-            return failed_incremental_scan(self.name());
-        };
-        let mut current_ids = HashSet::new();
-        let mut new_or_modified = Vec::new();
-
-        for (session_id, (path, mtime)) in current_files {
-            current_ids.insert(session_id.clone());
-            if !session_needs_update(known, self.name(), &session_id, mtime) {
-                continue;
-            }
-
-            match incremental_parse_jsonl(&path, || self.parse_session(&path, &thread_names)) {
-                IncrementalParse::Session(mut session) => {
-                    session.mtime = mtime;
-                    new_or_modified.push(session);
-                }
-                IncrementalParse::Delete => {
-                    current_ids.remove(&session_id);
-                }
-                IncrementalParse::Retain => {}
-            }
-        }
-
-        IncrementalScan {
-            agent: self.name(),
-            new_or_modified,
-            deleted_ids: if complete {
-                deleted_ids_for_agent(known, self.name(), &current_ids)
-            } else {
-                Vec::new()
-            },
-        }
+        self.incremental(known, None)
     }
 
     fn find_sessions_incremental_streaming(
@@ -293,50 +284,17 @@ impl Adapter for CodexAdapter {
         known: &KnownSessions,
         on_session: &mut SessionCallback<'_>,
     ) -> IncrementalScan {
-        let thread_names = self.load_thread_names();
-        let Some((current_files, complete)) = self.scan_session_files() else {
-            return failed_incremental_scan(self.name());
-        };
-        let mut current_ids = HashSet::new();
-        let mut new_or_modified = Vec::new();
-
-        for (session_id, (path, mtime)) in current_files {
-            current_ids.insert(session_id.clone());
-            if !session_needs_update(known, self.name(), &session_id, mtime) {
-                continue;
-            }
-
-            match incremental_parse_jsonl(&path, || self.parse_session(&path, &thread_names)) {
-                IncrementalParse::Session(mut session) => {
-                    session.mtime = mtime;
-                    on_session(session.clone());
-                    new_or_modified.push(session);
-                }
-                IncrementalParse::Delete => {
-                    current_ids.remove(&session_id);
-                }
-                IncrementalParse::Retain => {}
-            }
-        }
-
-        IncrementalScan {
-            agent: self.name(),
-            new_or_modified,
-            deleted_ids: if complete {
-                deleted_ids_for_agent(known, self.name(), &current_ids)
-            } else {
-                Vec::new()
-            },
-        }
+        self.incremental(known, Some(on_session))
     }
 
     fn resume_command(&self, session: &Session, yolo: bool) -> Vec<String> {
-        let mut cmd = vec!["codex".to_string()];
-        if yolo {
-            cmd.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-        }
-        cmd.extend(["resume".to_string(), session.id.clone()]);
-        cmd
+        build_resume_command(
+            "codex",
+            &["--dangerously-bypass-approvals-and-sandbox"],
+            yolo,
+            &["resume"],
+            &session.id,
+        )
     }
 
     fn raw_stats(&self) -> RawAdapterStats {
@@ -366,6 +324,36 @@ mod tests {
                 .join("\n"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn full_scan_mtimes_match_the_incremental_scan() {
+        let temp = tempdir().unwrap();
+        let sessions_dir = temp.path().join("sessions");
+        fs::create_dir_all(sessions_dir.join("2026/06/21")).unwrap();
+        write_jsonl(
+            &sessions_dir.join("2026/06/21/rollout-2026-06-21T10-00-00-parity.jsonl"),
+            &[
+                json!({"type": "session_meta", "payload": {"id": "parity1", "cwd": "/work/app"}}),
+                json!({"type": "event_msg", "payload": {"type": "user_message", "message": "Prompt"}}),
+            ],
+        );
+        let adapter = CodexAdapter::new(sessions_dir, temp.path().join("session_index.jsonl"));
+
+        let full = adapter.find_sessions();
+        assert_eq!(full.len(), 1);
+        let known: KnownSessions = full
+            .iter()
+            .map(|session| (("codex".to_string(), session.id.clone()), session.mtime))
+            .collect();
+
+        let scan = adapter.find_sessions_incremental(&known);
+
+        assert!(
+            scan.new_or_modified.is_empty(),
+            "rebuild mtimes must satisfy the incremental scan"
+        );
+        assert!(scan.deleted_ids.is_empty());
     }
 
     #[test]
@@ -445,6 +433,31 @@ mod tests {
         let sessions = adapter.find_sessions();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].message_count, 2);
+    }
+
+    #[test]
+    fn indexes_user_response_items_without_legacy_user_events() {
+        let temp = tempdir().unwrap();
+        let sessions_dir = temp.path().join("sessions");
+        fs::create_dir_all(sessions_dir.join("2026/06/21")).unwrap();
+        let session_file = sessions_dir.join("2026/06/21/rollout-modern.jsonl");
+        write_jsonl(
+            &session_file,
+            &[
+                json!({"type": "session_meta", "payload": {"id": "modern", "cwd": "/work/app"}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "First modern prompt"}]}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "First modern answer"}]}}),
+                json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Second modern prompt"}]}}),
+            ],
+        );
+
+        let adapter = CodexAdapter::new(sessions_dir, temp.path().join("session_index.jsonl"));
+        let sessions = adapter.find_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "First modern prompt");
+        assert_eq!(sessions[0].message_count, 2);
+        assert!(sessions[0].content.contains("First modern answer"));
     }
 
     #[test]

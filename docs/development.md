@@ -20,17 +20,14 @@ Run the same core checks used by CI:
 
 ```bash
 cargo fmt --all --check
-cargo check --all-targets --locked
+cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 cargo build --release --locked
+nix flake check --no-update-lock-file
 git diff --check
 ```
 
-Clippy is useful for additional cleanup, although the project does not currently fail CI on every style warning:
-
-```bash
-cargo clippy --all-targets --locked
-```
+CI fails on any Clippy warning. Fix warnings or add a narrow, explicit `#[allow]` with a reason.
 
 ## Project layout
 
@@ -40,8 +37,9 @@ fast-resume/
 │   ├── main.rs             # Clap CLI and resume process handoff
 │   ├── config.rs           # Agent metadata, paths, and schema version
 │   ├── model.rs            # Normalized session model
+│   ├── output.rs           # Human tables and stable JSON envelopes
 │   ├── refresh.rs          # Concurrent incremental refresh orchestration
-│   ├── index.rs            # Tantivy index facade
+│   ├── index.rs            # Tantivy index facade and process locks
 │   ├── index/              # Schema, documents, queries, and statistics
 │   ├── query.rs            # User query and filter parsing
 │   ├── search.rs           # Search engine facade
@@ -52,9 +50,13 @@ fast-resume/
 ├── tests/                  # CLI integration tests
 ├── assets/                 # Project and agent artwork
 ├── python/                 # Compatibility wrappers packaged in wheels
+├── skills/                 # Portable Agent Skills embedded by the CLI
 ├── docs/                   # User and contributor documentation
 ├── Cargo.toml              # Rust dependencies and binary metadata
-└── pyproject.toml          # Maturin/PyPI metadata
+├── pyproject.toml          # Maturin/PyPI metadata
+├── flake.nix               # Nix package, app, checks, and development shell
+├── flake.lock              # Pinned standalone Nixpkgs revision
+└── nix/package.nix         # Source-based Rust package derivation
 ```
 
 ## Main components
@@ -70,9 +72,32 @@ fast-resume/
 
 ## Packaging
 
-`maturin` builds PyPI wheels containing the Rust binary and compatibility commands. Release automation also builds standalone macOS and Linux archives and dispatches the Homebrew formula update.
+The Nix flake builds directly from the repository source and committed
+`Cargo.lock`. Its package version comes from `Cargo.toml`, so release commits do
+not need a separate Nix version bump. CI checks the package on Linux and macOS.
 
-Pull-request CI builds and installs wheels for macOS ARM64/Intel, Linux ARM64/x86_64, and Windows x86_64. Release and publishing jobs run only after a qualifying push to `master`.
+`maturin` builds PyPI wheels containing the Rust binary and compatibility commands. The same wheel builds supply npm's native variants. All variants use the `fast-resume` package name with platform prerelease versions such as `2.7.0-linux-x64`. The launcher selects one through an npm alias in `optionalDependencies`; it does not download code from an install script.
+
+Release automation also builds standalone macOS and Linux archives and dispatches the Homebrew formula update. Pull-request CI builds and installs wheels for macOS ARM64/Intel and Linux ARM64/x86_64. Release and publishing jobs run after a qualifying push to `master`, or through a manual workflow run that resumes an existing release.
+
+### Resuming a partial release
+
+If a publish job fails after semantic-release has created the tag, run the CI workflow manually (Actions → CI → Run workflow) with the release version, for example `2.8.0`. The run rebuilds the artifacts from the tag and retries every publish step. Publishing is idempotent: npm skips versions that already exist, `uv publish` checks PyPI before uploading, and release-asset uploads overwrite.
+
+### npm publishing setup
+
+npm requires a package to exist before it can have a trusted publisher. Claim the package once from an interactive npm session without making the bootstrap version `latest`:
+
+```bash
+npm login
+npm publish ./npm/fast-resume --access public --tag bootstrap
+npm trust github fast-resume \
+  --repo angristan/fast-resume \
+  --file workflow.yml \
+  --allow-publish
+```
+
+The account must use 2FA. The trusted publisher is organization or user `angristan`, repository `fast-resume`, and workflow filename `workflow.yml`. The release workflow then publishes every native variant and the launcher through GitHub OIDC with provenance. It does not use an npm token. After a successful OIDC release, disallow token publishing in the npm package settings.
 
 ## Documentation
 

@@ -4,15 +4,13 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use walkdir::WalkDir;
 
 use crate::config;
 use crate::model::{RawAdapterStats, Session, file_mtime_seconds, file_timestamp, truncate_title};
 
 use super::shared::{
-    IncrementalParse, content_texts, failed_incremental_scan, incremental_from_files,
-    incremental_from_files_streaming, incremental_parse_jsonl, parse_timestamp_seconds,
-    raw_stats_for_tree, string_at, text_from_part,
+    IncrementalParse, build_resume_command, content_texts, incremental_parse_jsonl,
+    incremental_scan, parse_timestamp_seconds, raw_stats_for_tree, string_at, text_from_part,
 };
 use super::{Adapter, IncrementalScan, KnownSessions, SessionCallback};
 
@@ -29,17 +27,40 @@ impl Default for ClaudeAdapter {
 }
 
 impl ClaudeAdapter {
+    fn incremental(
+        &self,
+        known: &KnownSessions,
+        on_session: Option<&mut SessionCallback<'_>>,
+    ) -> IncrementalScan {
+        incremental_scan(
+            self.name(),
+            known,
+            self.scan_session_files().map(|files| (files, true)),
+            |path| self.parse_session_incremental(path),
+            on_session,
+        )
+    }
+
     #[allow(dead_code)]
     pub fn new(sessions_dir: PathBuf) -> Self {
         Self { sessions_dir }
     }
 
     fn parse_session(&self, path: &Path) -> Option<Session> {
+        let sidecar_title = claude_sidecar_title(path).ok().flatten();
+        self.parse_session_with_sidecar_title(path, sidecar_title)
+    }
+
+    fn parse_session_with_sidecar_title(
+        &self,
+        path: &Path,
+        sidecar_title: Option<String>,
+    ) -> Option<Session> {
         let file = fs::File::open(path).ok()?;
         let mut directory = String::new();
         let mut first_user_message = String::new();
-        let mut ai_title = String::new();
         let mut custom_title = String::new();
+        let mut ai_title = String::new();
         let mut messages = Vec::new();
         let mut turns = 0usize;
 
@@ -70,7 +91,7 @@ impl ClaudeAdapter {
                             && !text.starts_with("<local-command")
                         {
                             messages.push(format!("» {text}"));
-                            if first_user_message.is_empty() && text.chars().count() > 10 {
+                            if first_user_message.is_empty() && !text.trim().is_empty() {
                                 first_user_message = text;
                             }
                         }
@@ -113,15 +134,15 @@ impl ClaudeAdapter {
                 if has_text {
                     turns += 1;
                 }
-            } else if msg_type == "ai-title" {
-                let title = string_at(&data, &["aiTitle"]);
-                if !title.trim().is_empty() {
-                    ai_title = title;
-                }
             } else if msg_type == "custom-title" {
                 let title = string_at(&data, &["customTitle"]);
                 if !title.trim().is_empty() {
                     custom_title = title;
+                }
+            } else if msg_type == "ai-title" {
+                let title = string_at(&data, &["aiTitle"]);
+                if !title.trim().is_empty() {
+                    ai_title = title;
                 }
             }
         }
@@ -133,14 +154,14 @@ impl ClaudeAdapter {
         let index_title = claude_index_title(path);
         // "named" means a user-curated title (a /rename, or the session-list
         // summary) — not an AI-generated title, which nearly every session has.
-        let named = !custom_title.is_empty() || index_title.is_some();
-        let title_source = if !custom_title.is_empty() {
-            custom_title
-        } else {
-            index_title
-                .or_else(|| (!ai_title.is_empty()).then_some(ai_title))
-                .unwrap_or(first_user_message)
-        };
+        let named = sidecar_title.is_some() || !custom_title.is_empty() || index_title.is_some();
+        // Claude's sidecar stores the current `/rename` value separately
+        // from transcripts and the session index, both of which can lag.
+        let title_source = sidecar_title
+            .or_else(|| (!custom_title.is_empty()).then_some(custom_title))
+            .or(index_title)
+            .or_else(|| (!ai_title.is_empty()).then_some(ai_title))
+            .unwrap_or(first_user_message);
         let title = truncate_title(&title_source, 100, true);
         let mut session = Session::new(
             path.file_stem()?.to_string_lossy(),
@@ -157,7 +178,13 @@ impl ClaudeAdapter {
     }
 
     fn parse_session_incremental(&self, path: &Path) -> IncrementalParse {
-        incremental_parse_jsonl(path, || self.parse_session(path))
+        let sidecar_title = match claude_sidecar_title(path) {
+            Ok(title) => title,
+            Err(()) => return IncrementalParse::Retain,
+        };
+        incremental_parse_jsonl(path, || {
+            self.parse_session_with_sidecar_title(path, sidecar_title)
+        })
     }
 
     fn scan_session_files(&self) -> Option<HashMap<String, (PathBuf, f64)>> {
@@ -206,7 +233,9 @@ impl ClaudeAdapter {
                 else {
                     continue;
                 };
-                let mut mtime = file_mtime_seconds(&path);
+                let mut mtime = file_mtime_seconds(&path).max(file_mtime_seconds(
+                    &project_dir.join(&session_id).join("custom-title.json"),
+                ));
                 if let Some((_, index_mtime)) = project_index.get(&session_id) {
                     mtime = mtime.max(*index_mtime);
                 }
@@ -228,41 +257,21 @@ impl Adapter for ClaudeAdapter {
     }
 
     fn find_sessions(&self) -> Vec<Session> {
-        if !self.sessions_dir.exists() {
+        let Some(current_files) = self.scan_session_files() else {
             return Vec::new();
-        }
-        let mut sessions = Vec::new();
-        for entry in WalkDir::new(&self.sessions_dir)
-            .min_depth(2)
-            .max_depth(2)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("agent-"))
-            {
-                continue;
-            }
-            if let Some(session) = self.parse_session(path) {
-                sessions.push(session);
-            }
-        }
-        sessions
+        };
+        current_files
+            .into_values()
+            .filter_map(|(path, mtime)| {
+                let mut session = self.parse_session(&path)?;
+                session.mtime = mtime;
+                Some(session)
+            })
+            .collect()
     }
 
     fn find_sessions_incremental(&self, known: &KnownSessions) -> IncrementalScan {
-        let Some(current_files) = self.scan_session_files() else {
-            return failed_incremental_scan(self.name());
-        };
-        incremental_from_files(self.name(), known, current_files, |path| {
-            self.parse_session_incremental(path)
-        })
+        self.incremental(known, None)
     }
 
     fn find_sessions_incremental_streaming(
@@ -270,30 +279,36 @@ impl Adapter for ClaudeAdapter {
         known: &KnownSessions,
         on_session: &mut SessionCallback<'_>,
     ) -> IncrementalScan {
-        let Some(current_files) = self.scan_session_files() else {
-            return failed_incremental_scan(self.name());
-        };
-        incremental_from_files_streaming(
-            self.name(),
-            known,
-            current_files,
-            |path| self.parse_session_incremental(path),
-            on_session,
-        )
+        self.incremental(known, Some(on_session))
     }
 
     fn resume_command(&self, session: &Session, yolo: bool) -> Vec<String> {
-        let mut cmd = vec!["claude".to_string()];
-        if yolo {
-            cmd.push("--dangerously-skip-permissions".to_string());
-        }
-        cmd.extend(["--resume".to_string(), session.id.clone()]);
-        cmd
+        build_resume_command(
+            "claude",
+            &["--dangerously-skip-permissions"],
+            yolo,
+            &["--resume"],
+            &session.id,
+        )
     }
 
     fn raw_stats(&self) -> RawAdapterStats {
         raw_stats_for_tree(self.name(), &self.sessions_dir, "jsonl")
     }
+}
+
+fn claude_sidecar_title(session_file: &Path) -> Result<Option<String>, ()> {
+    let session_id = session_file.file_stem().ok_or(())?;
+    let project_dir = session_file.parent().ok_or(())?;
+    let path = project_dir.join(session_id).join("custom-title.json");
+    let data = match fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let data = serde_json::from_slice::<Value>(&data).map_err(|_| ())?;
+    let title = string_at(&data, &["customTitle"]);
+    Ok((!title.trim().is_empty()).then(|| title.trim().to_string()))
 }
 
 fn claude_index_title(session_file: &Path) -> Option<String> {
@@ -316,8 +331,14 @@ fn claude_project_index(project_dir: &Path) -> HashMap<String, (String, f64)> {
     };
     for entry in entries {
         let session_id = string_at(entry, &["sessionId"]);
+        let custom_title = string_at(entry, &["customTitle"]);
         let summary = string_at(entry, &["summary"]);
-        if session_id.is_empty() || summary.trim().is_empty() {
+        let title = if custom_title.trim().is_empty() {
+            summary.trim()
+        } else {
+            custom_title.trim()
+        };
+        if session_id.is_empty() || title.is_empty() {
             continue;
         }
         let modified = parse_timestamp_seconds(&string_at(entry, &["modified"])).unwrap_or(0.0);
@@ -327,7 +348,7 @@ fn claude_project_index(project_dir: &Path) -> HashMap<String, (String, f64)> {
             .map(|value| value / 1000.0)
             .unwrap_or(0.0);
         let mtime = index_mtime.max(modified).max(file_mtime);
-        titles.insert(session_id, (summary.trim().to_string(), mtime));
+        titles.insert(session_id, (title.to_string(), mtime));
     }
     titles
 }
@@ -342,6 +363,84 @@ mod tests {
     use crate::adapters::Adapter;
 
     use super::*;
+
+    fn set_modified(path: &Path, seconds: u64) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn indexes_short_non_meta_string_user_prompts() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let project = projects.join("project-a");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("short-prompt.jsonl"),
+            [
+                json!({
+                    "type": "user",
+                    "cwd": "/work/app",
+                    "message": {"content": "Hi"}
+                })
+                .to_string(),
+                json!({"type": "assistant", "message": {"content": "Hello"}}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let sessions = ClaudeAdapter::new(projects).find_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "Hi");
+        assert!(sessions[0].content.contains("» Hi"));
+    }
+
+    #[test]
+    fn full_scan_mtimes_match_the_incremental_scan() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let project = projects.join("project-a");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("mtime-parity.jsonl"),
+            [
+                json!({
+                    "type": "user",
+                    "cwd": "/work/app",
+                    "message": {"content": "Prompt with enough characters"}
+                })
+                .to_string(),
+                json!({"type": "assistant", "message": {"content": "Response"}}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let adapter = ClaudeAdapter::new(projects);
+
+        let full = adapter.find_sessions();
+        assert_eq!(full.len(), 1);
+        let known: crate::adapters::KnownSessions = full
+            .iter()
+            .map(|session| (("claude".to_string(), session.id.clone()), session.mtime))
+            .collect();
+
+        let scan = adapter.find_sessions_incremental(&known);
+
+        assert!(
+            scan.new_or_modified.is_empty(),
+            "rebuild mtimes must satisfy the incremental scan"
+        );
+        assert!(scan.deleted_ids.is_empty());
+    }
 
     #[test]
     fn uses_sessions_index_title() {
@@ -412,6 +511,205 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "My renamed session");
         assert!(sessions[0].named);
+    }
+
+    #[test]
+    fn uses_latest_custom_title_before_index_and_ai_titles() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let project = projects.join("project-a");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("session-custom-title.jsonl"),
+            [
+                json!({
+                    "type": "user",
+                    "cwd": "/work/app",
+                    "message": {"content": "Original first prompt for this session"}
+                })
+                .to_string(),
+                json!({"type": "ai-title", "aiTitle": "Generated title"}).to_string(),
+                json!({"type": "custom-title", "customTitle": "First custom title"}).to_string(),
+                json!({"type": "custom-title", "customTitle": ""}).to_string(),
+                json!({"type": "custom-title", "customTitle": "Renamed Claude thread"}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            project.join("sessions-index.json"),
+            json!({
+                "version": 1,
+                "entries": [{
+                    "sessionId": "session-custom-title",
+                    "summary": "Stale generated summary"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let sessions = ClaudeAdapter::new(projects).find_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "Renamed Claude thread");
+    }
+
+    #[test]
+    fn sidecar_custom_title_is_authoritative_and_refreshes_incrementally() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let project = projects.join("project-a");
+        let session_id = "session-sidecar-title";
+        fs::create_dir_all(project.join(session_id)).unwrap();
+        fs::write(
+            project.join(format!("{session_id}.jsonl")),
+            [
+                json!({
+                    "type": "user",
+                    "cwd": "/work/app",
+                    "message": {"content": "Original first prompt for this session"}
+                })
+                .to_string(),
+                json!({"type": "custom-title", "customTitle": "Transcript title"}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            project.join("sessions-index.json"),
+            json!({
+                "version": 1,
+                "entries": [{
+                    "sessionId": session_id,
+                    "customTitle": "Indexed title"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let sidecar = project.join(session_id).join("custom-title.json");
+        fs::write(
+            &sidecar,
+            json!({"customTitle": "Initial sidecar title"}).to_string(),
+        )
+        .unwrap();
+        set_modified(&sidecar, 2_000_000_000);
+        let adapter = ClaudeAdapter::new(projects);
+
+        let initial = adapter.find_sessions();
+
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].title, "Initial sidecar title");
+        let known: KnownSessions = initial
+            .iter()
+            .map(|session| (("claude".to_string(), session.id.clone()), session.mtime))
+            .collect();
+        fs::write(
+            &sidecar,
+            json!({"customTitle": "Updated sidecar title"}).to_string(),
+        )
+        .unwrap();
+        set_modified(&sidecar, 2_000_000_100);
+
+        let scan = adapter.find_sessions_incremental(&known);
+
+        assert_eq!(scan.new_or_modified.len(), 1);
+        assert_eq!(scan.new_or_modified[0].title, "Updated sidecar title");
+        assert!(scan.deleted_ids.is_empty());
+    }
+
+    #[test]
+    fn malformed_sidecar_retains_the_indexed_session() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let project = projects.join("project-a");
+        let session_id = "session-malformed-sidecar";
+        fs::create_dir_all(project.join(session_id)).unwrap();
+        fs::write(
+            project.join(format!("{session_id}.jsonl")),
+            json!({
+                "type": "user",
+                "cwd": "/work/app",
+                "message": {"content": "Keep the indexed session"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(project.join(session_id).join("custom-title.json"), "{").unwrap();
+        let adapter = ClaudeAdapter::new(projects);
+        let mut known = KnownSessions::new();
+        known.insert(("claude".to_string(), session_id.to_string()), 0.0);
+
+        let scan = adapter.find_sessions_incremental(&known);
+
+        assert!(scan.new_or_modified.is_empty());
+        assert!(scan.deleted_ids.is_empty());
+    }
+
+    #[test]
+    fn refreshes_sessions_index_custom_title() {
+        let temp = tempdir().unwrap();
+        let projects = temp.path().join("projects");
+        let project = projects.join("project-a");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("session-index-custom-title.jsonl"),
+            [
+                json!({
+                    "type": "user",
+                    "cwd": "/work/app",
+                    "message": {"content": "Original first prompt for this session"}
+                })
+                .to_string(),
+                json!({"type": "assistant", "message": {"content": "Response"}}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let index_file = project.join("sessions-index.json");
+        fs::write(
+            &index_file,
+            json!({
+                "version": 1,
+                "entries": [{
+                    "sessionId": "session-index-custom-title",
+                    "customTitle": "Initial custom title",
+                    "summary": "Stale generated summary",
+                    "modified": "2030-01-01T00:00:00Z"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let adapter = ClaudeAdapter::new(projects);
+        let initial = adapter.find_sessions();
+        assert_eq!(initial[0].title, "Initial custom title");
+        let known: KnownSessions = initial
+            .iter()
+            .map(|session| (("claude".to_string(), session.id.clone()), session.mtime))
+            .collect();
+
+        fs::write(
+            index_file,
+            json!({
+                "version": 1,
+                "entries": [{
+                    "sessionId": "session-index-custom-title",
+                    "customTitle": "Updated custom title",
+                    "summary": "Stale generated summary",
+                    "modified": "2031-01-01T00:00:00Z"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let scan = adapter.find_sessions_incremental(&known);
+
+        assert_eq!(scan.new_or_modified.len(), 1);
+        assert_eq!(scan.new_or_modified[0].title, "Updated custom title");
+        assert!(scan.deleted_ids.is_empty());
     }
 
     #[test]

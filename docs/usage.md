@@ -63,14 +63,29 @@ fr "dir:backend -agent:vibe auth"
 
 Type a partial filter such as `agent:cl` and press `Tab` to accept the suggestion.
 
+## TUI color themes
+
+The TUI detects whether the terminal has a dark or light background. Override the detected theme when needed:
+
+```bash
+fr --theme light
+fr --theme dark
+FAST_RESUME_THEME=light fr
+```
+
+The command-line option takes precedence over `FAST_RESUME_THEME`. Automatic detection falls back to the dark theme when the terminal does not report its background color.
+
 ## Non-interactive commands
 
 ```bash
-# Print matching sessions without opening the TUI
-fr --no-tui "api error"
-
-# List sessions without offering to resume
+# List matching sessions without opening the TUI (--no-tui is an alias)
 fr --list "agent:codex"
+
+# Return stable machine-readable results
+fr --json --limit 10 "agent:codex api error"
+
+# Serve the existing index without scanning for changes
+fr --json --no-refresh "agent:codex api error"
 
 # Rebuild the index from every source
 fr --rebuild
@@ -78,6 +93,43 @@ fr --rebuild
 # Show index and activity statistics
 fr --stats
 ```
+
+### JSON output
+
+`--json` prints exactly one JSON object to stdout and implies non-interactive listing. Diagnostics and errors stay on stderr.
+
+```json
+{
+  "schema_version": 1,
+  "sessions": [
+    {
+      "id": "abc123",
+      "agent": "codex",
+      "title": "Review API authentication",
+      "directory": "/work/backend",
+      "timestamp": "2026-07-15T12:00:00+02:00",
+      "message_count": 8,
+      "resume_command": ["codex", "resume", "abc123"]
+    }
+  ],
+  "meta": {
+    "state": "more",
+    "total": 24,
+    "offset": 0,
+    "limit": 10,
+    "returned": 10,
+    "next_offset": 10
+  }
+}
+```
+
+Continue with the same query and filters plus `--offset <next_offset>` only while `meta.state` is `more`. Stop on `complete` or `past_end`. `--all` returns every match from the requested offset; it conflicts with an explicit `--limit`.
+
+The JSON session objects omit indexed conversation content and internal refresh fields. `--yolo` changes supported `resume_command` values but never starts a session in JSON mode.
+
+Non-interactive calls refresh the index first. If another `fr` process holds the refresh lock, the call prints a notice on stderr and waits. Pass `--no-refresh` to skip the scan and serve the last indexed state immediately.
+
+Run `fr --agent-context` to print the bundled Agent Skill for coding-agent use.
 
 ## Command reference
 
@@ -90,11 +142,20 @@ Arguments:
 Options:
   -a, --agent <AGENT>     Filter by agent
   -d, --directory <DIR>   Filter by directory substring
-      --no-tui            Output a list instead of opening the TUI
-      --list              List sessions without resuming
+      --list              List sessions to stdout instead of opening the TUI
+                          [alias: --no-tui]
+      --json              Output a stable JSON session list
+      --limit <N>         Maximum sessions to return (default: 50)
+      --offset <N>        Skip matching sessions
+      --all               Return all matches from the requested offset
+      --no-refresh        Serve the existing index without scanning for changes
       --rebuild           Rebuild the Tantivy index from a fresh scan
       --stats             Show index and session statistics
+                          (honors -a and -d filters)
+      --agent-context     Print concise instructions for coding agents
       --yolo              Force auto-approve flags where supported
+      --theme <THEME>      Select auto, dark, or light TUI colors
+                          [env: FAST_RESUME_THEME=] [default: auto]
       --images            Enable agent artwork when supported
       --no-images         Disable agent artwork
       --image-protocol <PROTOCOL>
@@ -105,15 +166,28 @@ Options:
 
 ## Keybindings
 
-### Search and navigation
+Press `F1` in the TUI to show all keyboard shortcuts.
+
+### Search input
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` or `Ctrl+B` / `Ctrl+F` | Move the cursor |
+| `Home` / `End` or `Ctrl+A` / `Ctrl+E` | Move to the start or end |
+| `Backspace` | Delete the previous character |
+| `Delete` / `Ctrl+D` | Delete the next character |
+| `Ctrl+W` | Delete the previous word |
+| `Ctrl+U` | Delete to the start |
+| `Tab` / `Shift+Tab` | Accept a suggestion or cycle the agent filter |
+
+### Results navigation
 
 | Key | Action |
 | --- | --- |
 | `↑` / `↓` | Move selection |
 | `Ctrl+J` / `Ctrl+K` | Move selection |
 | `Page Up` / `Page Down` | Move by 10 rows |
-| `Tab` / `Shift+Tab` | Accept a suggestion or cycle the agent filter |
-| `Ctrl+N` | Toggle showing only named sessions (renamed or AI-titled) |
+| `Ctrl+N` | Toggle showing only named sessions |
 | `Enter` | Resume the selected session |
 
 ### Preview and actions
@@ -124,6 +198,7 @@ Options:
 | `Alt`+`+` / `Alt`+`-` | Scroll the preview pane |
 | Mouse wheel | Scroll the list or preview under the pointer |
 | `Ctrl+Y` | Copy the complete resume command |
+| `F1` | Show or close keyboard help |
 | `Esc` / `Ctrl+C` | Quit |
 
 ### Yolo confirmation
@@ -142,16 +217,20 @@ Yolo mode resumes an agent with its auto-approve or skip-permissions option when
 
 | Agent | Added option | Detected from session |
 | --- | --- | --- |
+| Antigravity CLI | `--dangerously-skip-permissions` | No |
 | Claude | `--dangerously-skip-permissions` | No |
 | Codex | `--dangerously-bypass-approvals-and-sandbox` | Yes |
 | Copilot CLI | `--yolo` | No |
-| Vibe | `--agent auto-approve` | Yes |
 | Crush | `--yolo` | No |
+| Cursor CLI | `--yolo` | No |
+| Grok Build | `--always-approve` | No |
+| Kimi Code | `--yolo` | No |
+| Vibe | `--agent auto-approve` | Yes |
 | OpenCode | Configuration-based | — |
 | Pi | Not applicable | — |
 | Copilot in VS Code | Not applicable | — |
 
-Codex and Vibe record their permission mode in session data, so fast-resume can preserve it automatically. Claude, Copilot CLI, and Crush do not; the TUI asks before resuming them. Pi has no fast-resume yolo variant. Pass `fr --yolo` to skip prompts and force supported options for agents that have one.
+Codex and Vibe record their permission mode in session data, so fast-resume can preserve it automatically. Antigravity CLI, Claude, Copilot CLI, Crush, Cursor CLI, Grok Build, and Kimi Code do not; the TUI asks before resuming them. Pi has no fast-resume yolo variant. Pass `fr --yolo` to skip prompts and force supported options for agents that have one.
 
 ## Statistics
 
@@ -182,6 +261,8 @@ claude               477   312.9 MB        377      10415     3.1 MB
 codex                107    23.6 MB         89        321   890.6 KB
 opencode            9275    46.3 MB         72       1912   597.7 KB
 ```
+
+The shown index location is the default. When `XDG_CACHE_HOME` is an absolute path, fast-resume uses `$XDG_CACHE_HOME/fast-resume/tantivy_index` instead.
 
 ## Terminal images
 

@@ -1,11 +1,13 @@
 use std::io::{self, Stdout};
+use std::panic;
+use std::sync::Once;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -26,6 +28,7 @@ mod preview;
 mod render;
 mod state;
 mod text;
+mod theme;
 
 use images::AgentImages;
 use input::handle_key;
@@ -34,6 +37,7 @@ use render::draw;
 use state::{AppState, ScanMessage, SearchRequest, handle_scan_message};
 
 pub use images::ImageProtocol;
+pub use theme::ThemeMode;
 
 pub enum TuiExit {
     Quit,
@@ -49,7 +53,9 @@ pub fn run_tui(
     directory_filter: Option<String>,
     yolo: bool,
     image_protocol: Option<ImageProtocol>,
+    theme_mode: ThemeMode,
 ) -> Result<TuiExit> {
+    let theme = theme_mode.resolve();
     let engine = SearchEngine::open_default()?;
     let (scan_tx, scan_rx) = mpsc::channel();
     thread::spawn(move || {
@@ -80,9 +86,18 @@ pub fn run_tui(
         let _ = scan_tx.send(message);
     });
 
+    install_panic_hook();
     let mut terminal = setup_terminal()?;
     let images = image_protocol.and_then(AgentImages::load);
-    let mut state = AppState::new(query, agent_filter, directory_filter, yolo, engine, images);
+    let mut state = AppState::new(
+        query,
+        agent_filter,
+        directory_filter,
+        yolo,
+        engine,
+        images,
+        theme,
+    );
     let result = run_loop(&mut terminal, &mut state, scan_rx);
     restore_terminal(&mut terminal)?;
     result
@@ -135,7 +150,9 @@ fn run_loop(
 
         if event::poll(Duration::from_millis(24))? {
             match event::read()? {
-                Event::Key(key) => {
+                // Terminals using the Kitty keyboard protocol also emit
+                // Release/Repeat events; acting on them doubles keystrokes.
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if let Some(exit) = handle_key(state, key)? {
                         return Ok(exit);
                     }
@@ -250,6 +267,31 @@ fn handle_mouse(state: &mut AppState, mouse: MouseEvent, area: Rect) -> bool {
     }
 }
 
+/// Restore the terminal before the default panic handler runs. Without this,
+/// the panic message prints into the alternate screen and is erased, and the
+/// shell is left in raw mode.
+fn install_panic_hook() {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let original = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            restore_terminal_modes();
+            original(info);
+        }));
+    });
+}
+
+fn restore_terminal_modes() {
+    let mut stdout = io::stdout();
+    let _ = execute!(
+        stdout,
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+    let _ = disable_raw_mode();
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     let mut guard = TerminalSetupGuard::default();
     enable_raw_mode()?;
@@ -321,6 +363,7 @@ mod tests {
 
     use super::input::handle_key;
     use super::state::{AppState, SearchRequest};
+    use super::theme::Theme;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -351,9 +394,13 @@ mod tests {
     }
 
     fn session_in(id: &str, directory: &str) -> Session {
+        session_for_agent(id, "codex", directory)
+    }
+
+    fn session_for_agent(id: &str, agent: &str, directory: &str) -> Session {
         Session::new(
             id,
-            "codex",
+            agent,
             format!("Session {id}"),
             directory,
             Local::now(),
@@ -364,6 +411,23 @@ mod tests {
 
     fn test_state(sessions: Vec<Session>) -> AppState {
         test_state_with_directory_filter(sessions, None)
+    }
+
+    #[test]
+    fn preview_cache_refreshes_when_session_content_changes() {
+        let state = test_state(Vec::new());
+        let mut session = session("preview-1");
+        session.content = "first version of the content".to_string();
+        session.mtime = 1.0;
+
+        let first = state.preview_lines(&session);
+        let cached = state.preview_lines(&session);
+        assert_eq!(format!("{first:?}"), format!("{cached:?}"));
+
+        session.content = "second version of the content".to_string();
+        session.mtime = 2.0;
+        let refreshed = state.preview_lines(&session);
+        assert!(format!("{refreshed:?}").contains("second version"));
     }
 
     #[test]
@@ -415,6 +479,7 @@ mod tests {
             false,
             SearchEngine::from_index(index.clone()),
             None,
+            Theme::dark(),
         );
         (state, index)
     }
@@ -461,6 +526,59 @@ mod tests {
     }
 
     #[test]
+    fn f1_opens_help_and_suspends_search_input() {
+        let mut state = test_state(Vec::new());
+
+        handle_key(&mut state, key(KeyCode::F(1), KeyModifiers::NONE)).unwrap();
+        assert!(state.show_help);
+
+        handle_key(&mut state, key(KeyCode::Char('z'), KeyModifiers::NONE)).unwrap();
+        assert!(state.query.is_empty());
+
+        handle_key(&mut state, key(KeyCode::F(1), KeyModifiers::NONE)).unwrap();
+        assert!(!state.show_help);
+    }
+
+    #[test]
+    fn emacs_keys_move_the_search_cursor() {
+        let mut state = test_state(Vec::new());
+        type_query(&mut state, "alpha βeta");
+        let end = state.query.chars().count();
+
+        handle_key(&mut state, key(KeyCode::Char('a'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.cursor, 0);
+
+        handle_key(&mut state, key(KeyCode::Char('f'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.cursor, 1);
+
+        handle_key(&mut state, key(KeyCode::Char('b'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.cursor, 0);
+
+        handle_key(&mut state, key(KeyCode::Char('e'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.cursor, end);
+    }
+
+    #[test]
+    fn emacs_keys_delete_search_text() {
+        let mut state = test_state(Vec::new());
+        type_query(&mut state, "aβc");
+        state.cursor = 1;
+
+        handle_key(&mut state, key(KeyCode::Char('d'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.query, "ac");
+        assert_eq!(state.cursor, 1);
+
+        state.cursor = state.query.chars().count();
+        type_query(&mut state, " beta  ");
+        handle_key(&mut state, key(KeyCode::Char('w'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(state.query, "ac ");
+
+        handle_key(&mut state, key(KeyCode::Char('u'), KeyModifiers::CONTROL)).unwrap();
+        assert!(state.query.is_empty());
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
     fn alt_plus_and_minus_scroll_preview() {
         let mut state = test_state(Vec::new());
         state.preview_scroll = 3;
@@ -504,8 +622,17 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_filter_into_query_when_there_is_no_suggestion() {
-        let mut state = test_state(Vec::new());
+    fn filter_tabs_and_cycle_include_only_agents_with_sessions() {
+        let mut state = test_state(vec![
+            session_for_agent("codex-1", "codex", "/tmp/codex"),
+            session_for_agent("claude-1", "claude", "/tmp/claude"),
+            session_for_agent("codex-2", "codex", "/tmp/codex"),
+        ]);
+
+        assert_eq!(
+            state.agent_filters_with_sessions(),
+            vec![("claude", 1), ("codex", 2)]
+        );
 
         handle_key(&mut state, key(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
 
@@ -518,11 +645,23 @@ mod tests {
     }
 
     #[test]
-    fn deleting_cycled_filter_keyword_clears_filter() {
+    fn filter_cycle_stays_on_all_when_no_agent_has_sessions() {
         let mut state = test_state(Vec::new());
 
         handle_key(&mut state, key(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
-        for _ in 0.."agent:claude".chars().count() {
+
+        assert!(state.agent_filters_with_sessions().is_empty());
+        assert!(state.query.is_empty());
+        assert!(state.all_agent_filter_active());
+    }
+
+    #[test]
+    fn deleting_cycled_filter_keyword_clears_filter() {
+        let mut state = test_state(vec![session("codex-1")]);
+
+        handle_key(&mut state, key(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
+        let query_len = state.query.chars().count();
+        for _ in 0..query_len {
             handle_key(&mut state, key(KeyCode::Backspace, KeyModifiers::NONE)).unwrap();
         }
 
@@ -537,7 +676,7 @@ mod tests {
     fn reverse_filter_cycle_removes_agent_keyword_for_all() {
         let mut state = test_state(Vec::new());
 
-        type_query(&mut state, "api agent:claude");
+        type_query(&mut state, "api agent:antigravity");
         handle_key(&mut state, key(KeyCode::BackTab, KeyModifiers::SHIFT)).unwrap();
 
         assert_eq!(state.query, "api");

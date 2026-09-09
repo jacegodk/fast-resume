@@ -1,6 +1,5 @@
 use std::env;
 use std::io;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::Instant;
@@ -10,9 +9,10 @@ use clap::{Parser, ValueEnum};
 use fast_resume::adapters::all_adapters;
 use fast_resume::config::{VERSION, index_dir, is_agent};
 use fast_resume::index::SessionIndex;
+use fast_resume::output::{DEFAULT_LIST_LIMIT, print_sessions_json, print_sessions_table};
 use fast_resume::search::SearchEngine;
 use fast_resume::stats::print_stats;
-use fast_resume::tui::{TuiExit, run_tui};
+use fast_resume::tui::{ThemeMode, TuiExit, run_tui};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum ImageProtocolArg {
@@ -20,6 +20,13 @@ enum ImageProtocolArg {
     Kitty,
     Sixel,
     Iterm2,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+enum ThemeArg {
+    Auto,
+    Dark,
+    Light,
 }
 
 #[derive(Debug, Parser)]
@@ -36,13 +43,29 @@ struct Args {
     #[arg(short, long)]
     directory: Option<String>,
 
-    /// Output list to stdout instead of opening the TUI.
-    #[arg(long)]
-    no_tui: bool,
-
-    /// Just list sessions, don't resume.
-    #[arg(long = "list")]
+    /// List sessions to stdout instead of opening the TUI.
+    #[arg(long = "list", visible_alias = "no-tui")]
     list_only: bool,
+
+    /// Output a stable JSON session list instead of opening the TUI.
+    #[arg(long, conflicts_with = "stats")]
+    json: bool,
+
+    /// Maximum sessions to return in list or JSON output.
+    #[arg(long, value_parser = parse_positive_usize, conflicts_with = "all")]
+    limit: Option<usize>,
+
+    /// Skip this many matching sessions in list or JSON output.
+    #[arg(long)]
+    offset: Option<usize>,
+
+    /// Return all matching sessions from the requested offset.
+    #[arg(long)]
+    all: bool,
+
+    /// Serve the existing index without scanning for session changes.
+    #[arg(long)]
+    no_refresh: bool,
 
     /// Force a fresh session scan and rebuild the Tantivy index.
     #[arg(long)]
@@ -52,6 +75,10 @@ struct Args {
     #[arg(long)]
     stats: bool,
 
+    /// Print concise instructions for coding agents.
+    #[arg(long)]
+    agent_context: bool,
+
     /// Resume sessions with auto-approve/skip-permissions flags where supported.
     #[arg(long)]
     yolo: bool,
@@ -60,12 +87,21 @@ struct Args {
     #[arg(long = "no-version-check", hide = true)]
     _no_version_check: bool,
 
+    /// Select a TUI color theme.
+    #[arg(
+        long,
+        value_enum,
+        env = "FAST_RESUME_THEME",
+        default_value_t = ThemeArg::Auto
+    )]
+    theme: ThemeArg,
+
     /// Render agent PNGs in the preview pane (enabled by default when supported).
     #[arg(long)]
     images: bool,
 
     /// Disable agent PNGs in the TUI.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "images")]
     no_images: bool,
 
     /// Force a terminal image protocol for --images.
@@ -75,7 +111,12 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let query = args.query.unwrap_or_default();
+    if args.agent_context {
+        print!("{}", include_str!("../skills/fast-resume/SKILL.md"));
+        return Ok(());
+    }
+    validate_pagination_args(&args)?;
+    let query = args.query.clone().unwrap_or_default();
 
     if args.rebuild {
         let start = Instant::now();
@@ -90,44 +131,86 @@ fn main() -> Result<()> {
             start.elapsed().as_secs_f64() * 1000.0,
             index_dir().display()
         );
-        if !args.no_tui && !args.list_only && query.is_empty() && !args.stats {
+        if !args.list_only && !args.json && query.is_empty() && !args.stats {
             return Ok(());
         }
     }
 
     if args.stats {
-        let index = refreshed_index()?;
-        let stats = index.stats()?;
+        let index = refreshed_index(args.no_refresh)?;
+        let stats = index.stats_for(args.agent.as_deref(), args.directory.as_deref())?;
         if stats.total_sessions == 0 {
             println!("No sessions indexed.");
             return Ok(());
         }
         let raw_stats: Vec<_> = all_adapters()
             .into_iter()
+            .filter(|adapter| {
+                args.agent
+                    .as_deref()
+                    .is_none_or(|agent| adapter.name() == agent)
+            })
             .map(|adapter| adapter.raw_stats())
             .collect();
         print_stats(&stats, &raw_stats);
         return Ok(());
     }
 
-    if args.no_tui || args.list_only {
-        let index = refreshed_index()?;
+    if args.list_only || args.json {
+        let index = refreshed_index(args.no_refresh)?;
         let engine = SearchEngine::from_index(index);
-        let results = engine.search(&query, args.agent.as_deref(), args.directory.as_deref(), 50);
-        let total = engine.count_matches(&query, args.agent.as_deref(), args.directory.as_deref());
-        print_sessions(&results, total);
+        let total = engine
+            .count_result(&query, args.agent.as_deref(), args.directory.as_deref())
+            .context("search failed")?;
+        let offset = args.offset.unwrap_or(0);
+        let limit = if args.all {
+            total.saturating_sub(offset)
+        } else {
+            args.limit.unwrap_or(DEFAULT_LIST_LIMIT)
+        };
+        let results = engine
+            .search_result_with_offset(
+                &query,
+                args.agent.as_deref(),
+                args.directory.as_deref(),
+                offset,
+                limit,
+            )
+            .context("search failed")?;
+        if args.json {
+            print_sessions_json(&results, total, offset, limit, args.yolo)?;
+        } else {
+            print_sessions_table(&results, total, offset);
+        }
         return Ok(());
     }
 
-    let image_protocol = if args.no_images && !args.images {
+    let image_protocol = if args.no_images {
         None
     } else {
         Some(args.image_protocol.into())
     };
 
-    match run_tui(query, args.agent, args.directory, args.yolo, image_protocol)? {
+    match run_tui(
+        query,
+        args.agent,
+        args.directory,
+        args.yolo,
+        image_protocol,
+        args.theme.into(),
+    )? {
         TuiExit::Quit => Ok(()),
         TuiExit::Resume { command, directory } => exec_resume(command, directory),
+    }
+}
+
+impl From<ThemeArg> for ThemeMode {
+    fn from(value: ThemeArg) -> Self {
+        match value {
+            ThemeArg::Auto => Self::Auto,
+            ThemeArg::Dark => Self::Dark,
+            ThemeArg::Light => Self::Light,
+        }
     }
 }
 
@@ -150,48 +233,38 @@ fn validate_agent(value: &str) -> std::result::Result<String, String> {
     }
 }
 
-fn refreshed_index() -> Result<SessionIndex> {
+fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
+    let value = value
+        .parse::<usize>()
+        .map_err(|_| "must be a positive integer".to_string())?;
+    if value == 0 {
+        return Err("must be greater than zero".to_string());
+    }
+    Ok(value)
+}
+
+fn validate_pagination_args(args: &Args) -> Result<()> {
+    if (args.limit.is_some() || args.offset.is_some() || args.all) && !(args.json || args.list_only)
+    {
+        bail!("--limit, --offset, and --all require --json, --list, or --no-tui");
+    }
+    if args.no_refresh && !(args.json || args.list_only || args.stats) {
+        bail!("--no-refresh requires --json, --list, --no-tui, or --stats");
+    }
+    Ok(())
+}
+
+fn refreshed_index(no_refresh: bool) -> Result<SessionIndex> {
     let index = SessionIndex::open_default()?;
-    if index.total_len()? == 0 {
-        let sessions = SessionIndex::scan_all_sessions();
-        index.rebuild(sessions)?;
-    } else {
-        index.refresh_incremental()?;
+    if no_refresh {
+        return Ok(index);
     }
-    Ok(index)
-}
-
-fn print_sessions(results: &[fast_resume::model::Session], total: usize) {
-    if results.is_empty() {
-        println!("No sessions found.");
-        return;
-    }
-
-    println!(
-        "{:<15}  {:<52}  {:<38}  {}",
-        "Agent", "Title", "Directory", "ID"
-    );
-    println!("{}", "-".repeat(124));
-    for session in results {
-        println!(
-            "{:<15}  {:<52}  {:<38}  {}",
-            session.agent,
-            truncate_for_terminal(&session.title, 52),
-            truncate_for_terminal(&session.display_directory(), 38),
-            session.id
+    index.refresh_incremental_notify(|| {
+        eprintln!(
+            "Waiting for another fr process to finish refreshing; pass --no-refresh to search the current index."
         );
-    }
-    println!("\nShowing {} of {} sessions", results.len(), total);
-}
-
-fn truncate_for_terminal(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        return value.to_string();
-    }
-    let keep = width.saturating_sub(3);
-    let mut out: String = value.chars().take(keep).collect();
-    out.push_str("...");
-    out
+    })?;
+    Ok(index)
 }
 
 fn exec_resume(command: Vec<String>, directory: String) -> Result<()> {
@@ -212,17 +285,7 @@ impl ExecBackend for ProcessExecBackend {
     }
 
     fn exec(&mut self, command: &[String]) -> io::Error {
-        #[cfg(unix)]
-        {
-            Command::new(&command[0]).args(&command[1..]).exec()
-        }
-        #[cfg(not(unix))]
-        {
-            match Command::new(&command[0]).args(&command[1..]).status() {
-                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-                Err(error) => error,
-            }
-        }
+        Command::new(&command[0]).args(&command[1..]).exec()
     }
 }
 
@@ -317,5 +380,12 @@ mod tests {
 
         assert!(args._no_version_check);
         assert!(args.list_only);
+    }
+
+    #[test]
+    fn accepts_explicit_tui_theme() {
+        let args = Args::try_parse_from(["fr", "--theme", "light"]).unwrap();
+
+        assert_eq!(args.theme, ThemeArg::Light);
     }
 }
